@@ -14,23 +14,25 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
 const servers = {
-    iceServers: [
-        { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }
-    ]
+    iceServers: [{ urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }]
 };
 
-let pc = new RTCPeerConnection(servers);
+let pc = null;
 let remoteStream = new MediaStream();
-
-let saveNameConfirmed = false;
 let outgoingVideoStream = null;
 let videoInputDevices = [];
 let currentVideoDeviceIndex = 0;
+
+let saveNameConfirmed = false;
 let videoEnabled = true;
 let audioEnabled = true;
 let currentRoomId = null;
 
-let callUnsub = null;
+let callUnsub = null;        
+let roomWaitingUnsub = null; 
+
+const enterCallOriginalSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M9 8v-2a2 2 0 0 1 2 -2h7a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-7a2 2 0 0 1 -2 -2v-2" /><path d="M3 12h13l-3 -3" /><path d="M13 15l3 -3" /></svg>`;
+const spinnerSVG = `<svg class="waiting-spinner" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M12 6l0 -3" /><path d="M16.25 7.75l2.15 -2.15" /><path d="M18 12l3 0" /><path d="M16.25 16.25l2.15 2.15" /><path d="M12 18l0 3" /><path d="M7.75 16.25l-2.15 2.15" /><path d="M6 12l-3 0" /><path d="M7.75 7.75l-2.15 -2.15" /></svg>`;
 
 const nameInput = document.getElementById('nameInput');
 const idInput = document.getElementById('idInput');
@@ -40,13 +42,12 @@ const waitingRoom = document.getElementById('waitingRoom');
 const inCall = document.getElementById('inCall');
 const incomingVideo = document.getElementById('incomingVideo');
 const endCallBtn = document.getElementById('endCall');
+const roomSetting = document.getElementById('roomSetting');
 
 const knockPopup = document.getElementById('knockPopup');
 const knockMessage = document.getElementById('knockMessage');
 const acceptKnockBtn = document.getElementById('acceptKnock');
 const declineKnockBtn = document.getElementById('declineKnock');
-
-const spinnerSVG = `<svg class="waiting-spinner" xmlns="http://www.w3.org/2000/svg"  viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M12 6l0 -3" /><path d="M16.25 7.75l2.15 -2.15" /><path d="M18 12l3 0" /><path d="M16.25 16.25l2.15 2.15" /><path d="M12 18l0 3" /><path d="M7.75 16.25l-2.15 2.15" /><path d="M6 12l-3 0" /><path d="M7.75 7.75l-2.15 -2.15" /></svg>`;
 
 function setVideoOrHide(videoElem, stream, enabled) {
     if (!stream || !enabled || !hasEnabledVideoTrack(stream)) {
@@ -65,36 +66,51 @@ function hasEnabledVideoTrack(stream) {
 }
 
 function updateButtons() {
-    if (nameInput.value.trim().length >= 1) {
-        saveNameBtn.classList.remove('disabled');
-        saveNameBtn.disabled = false;
-    } else {
-        saveNameBtn.classList.add('disabled');
-        saveNameBtn.disabled = true;
-    }
+    const hasName = nameInput.value.trim().length >= 1;
+    const hasId = idInput.value.trim().length >= 1;
 
-    if (saveNameConfirmed && nameInput.value.trim().length >= 1 && idInput.value.trim().length >= 1) {
-        enterCallBtn.classList.remove('disabled');
-        enterCallBtn.disabled = false;
-    } else {
-        enterCallBtn.classList.add('disabled');
-        enterCallBtn.disabled = true;
+    saveNameBtn.classList.toggle('disabled', !hasName);
+    saveNameBtn.disabled = !hasName;
+
+    const canEnter = saveNameConfirmed && hasName && hasId;
+    enterCallBtn.classList.toggle('disabled', !canEnter);
+    enterCallBtn.disabled = !canEnter;
+}
+
+function resetRoomState() {
+    if (roomWaitingUnsub) {
+        roomWaitingUnsub();
+        roomWaitingUnsub = null;
+    }
+    enterCallBtn.innerHTML = enterCallOriginalSVG;
+    knockPopup.classList.add('removed');
+}
+
+function addSpinnerToBtn(btn) {
+    btn.innerHTML = spinnerSVG;
+    if (!document.getElementById('waiting-spinner-style')) {
+        const css = document.createElement('style');
+        css.id = 'waiting-spinner-style';
+        css.innerHTML = `
+            .waiting-spinner { animation: spinner-rotate 1s linear infinite; }
+            @keyframes spinner-rotate { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+        `;
+        document.head.appendChild(css);
     }
 }
 
 async function ensurePermission(type) {
-    let granted = false;
     try {
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        if (navigator.mediaDevices?.getUserMedia) {
             await navigator.mediaDevices.getUserMedia(type === 'camera' ? { video: true } : { audio: true });
-            granted = true;
+            return true;
         }
-    } catch (e) { granted = false; }
-    return granted;
+    } catch (e) { }
+    return false;
 }
 
 async function getVideoInputDevices() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return [];
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
     const devices = await navigator.mediaDevices.enumerateDevices();
     return devices.filter(device => device.kind === 'videoinput');
 }
@@ -107,17 +123,13 @@ function updateAllOutgoingVideoPreviews() {
 
 function syncMediaToggles() {
     document.querySelectorAll('.videoEnabledToggle').forEach(btn => {
-        const videoEnabledIcon = btn.querySelector('#videoEnabled');
-        const videoDisabledIcon = btn.querySelector('#videoDisabled');
-        if (videoEnabledIcon) videoEnabledIcon.classList.toggle('removed', !videoEnabled);
-        if (videoDisabledIcon) videoDisabledIcon.classList.toggle('removed', videoEnabled);
+        btn.querySelector('#videoEnabled')?.classList.toggle('removed', !videoEnabled);
+        btn.querySelector('#videoDisabled')?.classList.toggle('removed', videoEnabled);
     });
 
     document.querySelectorAll('.audioEnabledToggle').forEach(btn => {
-        const audioEnabledIcon = btn.querySelector('#audioEnabled');
-        const audioDisabledIcon = btn.querySelector('#audioDisabled');
-        if (audioEnabledIcon) audioEnabledIcon.classList.toggle('removed', !audioEnabled);
-        if (audioDisabledIcon) audioDisabledIcon.classList.toggle('removed', audioEnabled);
+        btn.querySelector('#audioEnabled')?.classList.toggle('removed', !audioEnabled);
+        btn.querySelector('#audioDisabled')?.classList.toggle('removed', audioEnabled);
     });
 
     if (outgoingVideoStream) {
@@ -135,6 +147,7 @@ function syncMediaToggles() {
 async function switchToNextCamera() {
     videoInputDevices = await getVideoInputDevices();
     if (videoInputDevices.length === 0) return;
+
     currentVideoDeviceIndex = (currentVideoDeviceIndex + 1) % videoInputDevices.length;
     const nextDevice = videoInputDevices[currentVideoDeviceIndex];
 
@@ -145,8 +158,11 @@ async function switchToNextCamera() {
         });
 
         const videoTrack = newStream.getVideoTracks()[0];
-        const sender = pc.getSenders().find(s => s.track.kind === 'video');
-        if (sender) sender.replaceTrack(videoTrack);
+        
+        if (pc) {
+            const sender = pc.getSenders().find(s => s.track.kind === 'video');
+            if (sender) sender.replaceTrack(videoTrack);
+        }
 
         outgoingVideoStream = newStream;
         updateAllOutgoingVideoPreviews();
@@ -155,20 +171,21 @@ async function switchToNextCamera() {
 }
 
 function setupWebRTC() {
-    if (outgoingVideoStream) {
-        outgoingVideoStream.getTracks().forEach(track => {
-            pc.addTrack(track, outgoingVideoStream);
-        });
+    if (pc && pc.signalingState !== "closed") {
+        pc.close();
     }
-
+    pc = new RTCPeerConnection(servers);
+    remoteStream = new MediaStream();
+    setVideoOrHide(incomingVideo, remoteStream, true);
+    if (outgoingVideoStream) {
+        outgoingVideoStream.getTracks().forEach(track => pc.addTrack(track, outgoingVideoStream));
+    }
     pc.ontrack = event => {
-        remoteStream.getTracks().forEach(track => remoteStream.removeTrack(track));
         event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
         syncMediaToggles();
     };
-
     pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "disconnected" || pc.connectionState === "failed" || pc.connectionState === "closed") {
+        if (["disconnected", "failed", "closed"].includes(pc.connectionState)) {
             leaveCallAndReturnToWaitingRoom();
         }
     };
@@ -177,11 +194,9 @@ function setupWebRTC() {
 async function startCallAsCreator(roomId) {
     setupWebRTC();
     const callDoc = doc(db, 'rooms', roomId);
-    const offerCandidates = collection(callDoc, 'offerCandidates');
-    const answerCandidates = collection(callDoc, 'answerCandidates');
 
     pc.onicecandidate = event => {
-        if (event.candidate) addDoc(offerCandidates, event.candidate.toJSON());
+        if (event.candidate) addDoc(collection(callDoc, 'offerCandidates'), event.candidate.toJSON());
     };
 
     const offerDescription = await pc.createOffer();
@@ -192,15 +207,12 @@ async function startCallAsCreator(roomId) {
     callUnsub = onSnapshot(callDoc, snapshot => {
         const data = snapshot.data();
         if (!pc.currentRemoteDescription && data?.answer) {
-            const answerDescription = new RTCSessionDescription(data.answer);
-            pc.setRemoteDescription(answerDescription);
+            pc.setRemoteDescription(new RTCSessionDescription(data.answer));
         }
-        if (data && data.hasEnded) {
-            leaveCallAndReturnToWaitingRoom();
-        }
+        if (data?.hasEnded) leaveCallAndReturnToWaitingRoom();
     });
 
-    onSnapshot(answerCandidates, snapshot => {
+    onSnapshot(collection(callDoc, 'answerCandidates'), snapshot => {
         snapshot.docChanges().forEach(change => {
             if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
         });
@@ -212,11 +224,9 @@ async function startCallAsCreator(roomId) {
 async function startCallAsJoiner(roomId) {
     setupWebRTC();
     const callDoc = doc(db, 'rooms', roomId);
-    const offerCandidates = collection(callDoc, 'offerCandidates');
-    const answerCandidates = collection(callDoc, 'answerCandidates');
 
     pc.onicecandidate = event => {
-        if (event.candidate) addDoc(answerCandidates, event.candidate.toJSON());
+        if (event.candidate) addDoc(collection(callDoc, 'answerCandidates'), event.candidate.toJSON());
     };
 
     const callData = (await getDoc(callDoc)).data();
@@ -228,13 +238,10 @@ async function startCallAsJoiner(roomId) {
 
     if (callUnsub) callUnsub();
     callUnsub = onSnapshot(callDoc, snapshot => {
-        const data = snapshot.data();
-        if (data && data.hasEnded) {
-            leaveCallAndReturnToWaitingRoom();
-        }
+        if (snapshot.data()?.hasEnded) leaveCallAndReturnToWaitingRoom();
     });
 
-    onSnapshot(offerCandidates, snapshot => {
+    onSnapshot(collection(callDoc, 'offerCandidates'), snapshot => {
         snapshot.docChanges().forEach(change => {
             if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
         });
@@ -251,72 +258,49 @@ function transitionToInCall() {
 }
 
 async function leaveCallAndReturnToWaitingRoom() {
-    if (callUnsub) {
-        callUnsub();
-        callUnsub = null;
-    }
+    if (callUnsub) { callUnsub(); callUnsub = null; }
+
     if (currentRoomId) {
-        try {
-            const callDocRef = doc(db, 'rooms', currentRoomId);
-            await updateDoc(callDocRef, { hasEnded: true, participants: 0 });
-        } catch (e) {
-        }
+        try { await updateDoc(doc(db, 'rooms', currentRoomId), { hasEnded: true, participants: 0 }); } catch (e) { }
     }
+
     if (pc && pc.signalingState !== "closed") {
         try { pc.close(); } catch (e) { }
     }
+
     try {
-        if (outgoingVideoStream) {
-            outgoingVideoStream.getTracks().forEach(track => track.stop());
-            outgoingVideoStream = null;
+        if (remoteStream) {
+            remoteStream.getTracks().forEach(track => track.stop());
         }
     } catch (e) { }
-    try {
-        remoteStream.getTracks().forEach(track => remoteStream.removeTrack(track));
-    } catch (e) { }
-    updateAllOutgoingVideoPreviews();
+
     setVideoOrHide(incomingVideo, null, false);
+
     inCall.classList.add('removed');
     waitingRoom.classList.remove('removed');
-    enterCallBtn.innerHTML = "Join Room";
-}
-
-function addSpinnerToBtn(btn) {
-    btn.innerHTML = spinnerSVG;
-    if (!document.getElementById('waiting-spinner-style')) {
-        const css = document.createElement('style');
-        css.id = 'waiting-spinner-style';
-        css.innerHTML = `
-            .waiting-spinner {
-                animation: spinner-rotate 1s linear infinite;
-            }
-            @keyframes spinner-rotate {
-                from { transform: rotate(0deg);}
-                to { transform: rotate(360deg);}
-            }
-        `;
-        document.head.appendChild(css);
-    }
+    resetRoomState(); 
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    nameInput && nameInput.addEventListener('input', updateButtons);
-    idInput && idInput.addEventListener('input', updateButtons);
+    nameInput?.addEventListener('input', updateButtons);
+    idInput?.addEventListener('input', updateButtons);
 
-    saveNameBtn && saveNameBtn.addEventListener('click', function () {
+    saveNameBtn?.addEventListener('click', function () {
         if (!this.classList.contains('disabled')) {
             saveNameConfirmed = true;
             updateButtons();
         }
     });
 
-    const roomSetting = document.getElementById('roomSetting');
     if (roomSetting) {
         const options = roomSetting.querySelectorAll('p');
         options.forEach(option => {
             option.addEventListener('click', () => {
+                if (option.id === 'selectedSetting') return; 
+
                 options.forEach(opt => opt.id = '');
                 option.id = 'selectedSetting';
+                resetRoomState(); 
             });
         });
     }
@@ -333,17 +317,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     setVideoOrHide(incomingVideo, remoteStream, true);
 
     enterCallBtn.addEventListener('click', async () => {
+        if (enterCallBtn.classList.contains('disabled')) return;
+
         const myName = nameInput.value.trim();
         currentRoomId = idInput.value.trim();
         const isCreating = document.getElementById('selectedSetting').innerText.includes('Create');
         const roomDoc = doc(db, 'rooms', currentRoomId);
 
+        addSpinnerToBtn(enterCallBtn);
+
         if (isCreating) {
             await setDoc(roomDoc, { creator: myName, knock: null, knockStatus: 'idle', offer: null, answer: null, hasEnded: false, participants: 1 });
 
-            onSnapshot(roomDoc, (docSnap) => {
+            roomWaitingUnsub = onSnapshot(roomDoc, (docSnap) => {
                 const data = docSnap.data();
-                if (data && data.knockStatus === 'pending' && data.knock) {
+                if (data?.knockStatus === 'pending' && data.knock) {
                     knockMessage.innerText = `${data.knock} wants to join.`;
                     knockPopup.classList.remove('removed');
 
@@ -358,24 +346,26 @@ document.addEventListener('DOMContentLoaded', async () => {
                     };
                 }
             });
-            addSpinnerToBtn(enterCallBtn);
         } else {
             const docExists = await getDoc(roomDoc);
-            if (!docExists.exists()) return alert("Room does not exist.");
+            if (!docExists.exists()) {
+                alert("Room does not exist.");
+                resetRoomState();
+                return;
+            }
 
             await updateDoc(roomDoc, { knock: myName, knockStatus: 'pending' });
-            addSpinnerToBtn(enterCallBtn);
 
-            const unsub = onSnapshot(roomDoc, (docSnap) => {
+            roomWaitingUnsub = onSnapshot(roomDoc, (docSnap) => {
                 const data = docSnap.data();
-                if (data.knockStatus === 'accepted') {
-                    unsub();
+                if (data?.knockStatus === 'accepted') {
+                    if (roomWaitingUnsub) { roomWaitingUnsub(); roomWaitingUnsub = null; }
                     startCallAsJoiner(currentRoomId);
-                } else if (data.knockStatus === 'rejected') {
-                    unsub();
+                } else if (data?.knockStatus === 'rejected') {
+                    if (roomWaitingUnsub) { roomWaitingUnsub(); roomWaitingUnsub = null; }
                     alert("Call declined by host.");
                     enterCallBtn.innerHTML = "Join Failed";
-                    setTimeout(() => enterCallBtn.innerHTML = "Join Room", 2000);
+                    setTimeout(() => resetRoomState(), 2000);
                 }
             });
         }
