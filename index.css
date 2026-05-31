@@ -1,0 +1,254 @@
+@font-face {
+    font-family: "San Fransisco";
+    src: url("Fonts/SF-Pro-Display-Regular.otf");
+}
+
+@font-face {
+    font-family: "San Fransisco Mono";
+    src: url("Fonts/SFMono-Regular.otf");
+}
+
+* {
+    margin: 0;
+    border: 0;
+    padding: 0;
+    font-family: "San Fransisco", inter;
+    -webkit-tap-highlight-color: transparent;
+}
+
+body {
+    margin: 0px !important;
+    /* iOS notch space */
+}
+
+svg {
+    width: 32px;
+    height: 32px;
+    stroke: #fff;
+}
+
+@media (prefers-color-scheme: dark) {
+    svg {
+        stroke: #000;
+    }
+}
+
+#name,
+#room {
+    padding: 24px;
+}
+
+#name,
+#roomInit {
+    display: flex;
+    gap: 8px;
+}
+
+#name> :first-child,
+#roomInit> :first-child {
+    flex: 1 1 0%;
+    min-width: 0;
+}
+
+#roomSetting {
+    display: flex;
+    background-color: #f1f2f3;
+    border-radius: 999px;
+    padding: 4px;
+    margin-bottom: 16px;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+#roomSetting p {
+    flex: 1;
+    text-align: center;
+    margin: 0;
+    padding: 10px 16px;
+    border-radius: 999px;
+    font-size: 16px;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.25s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+/* Styling for the active state */
+#roomSetting p#selectedSetting {
+    background-color: #ffffff;
+    font-weight: 500;
+}
+
+#nameInput,
+#idInput {
+    background: #F2F2F2;
+    border-radius: 32px;
+    padding: 0px 16px;
+    color: #000;
+    outline: none;
+}
+
+#nameInput:focus,
+#idInput:focus {
+    color: #000;
+}
+
+#saveName.disabled,
+#enterCall.disabled {
+    background-color: hwb(270 75% 0%);
+}
+
+#waitingRoom {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - 32px);
+    gap: 16px;
+    padding: 16px;
+}
+
+.videoPreview {
+    overflow: hidden;
+}
+
+.outgoingVideo {
+    background: linear-gradient(to top, #00FFA1, #05FF22);
+}
+
+#waitingRoom>.videoPreview {
+    flex: 1 1 100%;
+    min-height: 0;
+    border-radius: 48px;
+    position: relative;
+}
+
+.videoPreview>.outgoingVideo {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+#waitingRoom>.videoPreview>.videoEnabledToggle {
+    position: absolute;
+    bottom: 88px;
+    right: 24px;
+}
+
+.videoEnabledToggle:has(#videoEnabled:not(.removed)) {
+    background-color: rgba(0, 255, 0, 0.5);
+}
+
+.videoEnabledToggle:has(#videoDisabled:not(.removed))>#videoDisabled {
+    stroke: #00ff00;
+}
+
+#waitingRoom>.videoPreview>.audioEnabledToggle {
+    position: absolute;
+    bottom: 24px;
+    right: 24px;
+}
+
+.audioEnabledToggle:has(#audioEnabled:not(.removed)) {
+    background-color: rgba(255, 128, 0, 0.5);
+}
+
+.audioEnabledToggle:has(#audioDisabled:not(.removed))>#audioDisabled {
+    stroke: #FF8000;
+}
+
+/* .videoEnabledToggle:has(#videoDisabled:not(.removed)),
+.audioEnabledToggle:has(#audioDisabled:not(.removed)),
+.cameraRotate {
+    background-color: rgba(255, 255, 255, 0.5);
+} */
+
+#waitingRoom>.videoPreview>.cameraRotate {
+    position: absolute;
+    bottom: 24px;
+    left: 24px;
+    z-index: 2;
+    pointer-events: auto;
+}
+
+.cameraRotate>svg {
+    stroke: #A040FF;
+}
+
+#inCall>.videoPreview {
+    width: 151px;
+    height: 268px;
+    border-radius: 32px;
+    position: fixed;
+    bottom: 32px;
+    left: 32px;
+    z-index: 2;
+    pointer-events: none;
+}
+
+#inCall>.videoPreview>.cameraRotate {
+    position: absolute;
+    bottom: 8px;
+    left: 8px;
+    z-index: 2;
+    pointer-events: auto;
+}
+
+#inCall>.videoEnabledToggle {
+    position: fixed;
+    bottom: 160px;
+    right: 32px;
+}
+
+#inCall>.audioEnabledToggle {
+    position: fixed;
+    bottom: 96px;
+    right: 32px;
+}
+
+#endCall {
+    position: fixed;
+    bottom: 32px;
+    right: 32px;
+    background-color: rgba(255, 0, 0, .5);
+}
+
+#incomingVideo {
+    position: fixed;
+    width: 100dvw;
+    height: 100dvh;
+    background: linear-gradient(to top, #6E3BD5, #0064D7);
+}
+
+.card {
+    margin: 0px !important;
+}
+
+.button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+    border-radius: 24px;
+    border: none;
+}
+
+.button.accented {
+    background-color: #A040FF;
+    border-radius: 24px;
+    width: 32px;
+    height: 32px;
+    transition: background-color 0.125s ease-in-out;
+}
+
+.button.accented:active {
+    background-color: #bf80ff;
+}
+
+.button:has(> :not(.removed) ~ :not(.removed)) {
+    padding: 8px 12px;
+    gap: 12px;
+}
+
+#install-btn {
+    position: fixed;
+    top: 32px;
+    right: 32px;
+}
