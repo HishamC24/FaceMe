@@ -215,6 +215,7 @@ svg {
     width: 100dvw;
     height: 100dvh;
     background: linear-gradient(to top, #6E3BD5, #0064D7);
+    object-fit: cover;
 }
 
 .card {
