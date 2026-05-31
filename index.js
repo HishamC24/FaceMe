@@ -22,14 +22,15 @@ let remoteStream = new MediaStream();
 let outgoingVideoStream = null;
 let videoInputDevices = [];
 let currentVideoDeviceIndex = 0;
+let isFrontCamera = false; // <-- To track if using front camera
 
 let saveNameConfirmed = false;
 let videoEnabled = true;
 let audioEnabled = true;
 let currentRoomId = null;
 
-let callUnsub = null;        
-let roomWaitingUnsub = null; 
+let callUnsub = null;
+let roomWaitingUnsub = null;
 
 const enterCallOriginalSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M9 8v-2a2 2 0 0 1 2 -2h7a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-7a2 2 0 0 1 -2 -2v-2" /><path d="M3 12h13l-3 -3" /><path d="M13 15l3 -3" /></svg>`;
 const spinnerSVG = `<svg class="waiting-spinner" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M12 6l0 -3" /><path d="M16.25 7.75l2.15 -2.15" /><path d="M18 12l3 0" /><path d="M16.25 16.25l2.15 2.15" /><path d="M12 18l0 3" /><path d="M7.75 16.25l-2.15 2.15" /><path d="M6 12l-3 0" /><path d="M7.75 7.75l-2.15 -2.15" /></svg>`;
@@ -49,13 +50,40 @@ const knockMessage = document.getElementById('knockMessage');
 const acceptKnockBtn = document.getElementById('acceptKnock');
 const declineKnockBtn = document.getElementById('declineKnock');
 
-function setVideoOrHide(videoElem, stream, enabled) {
+/**
+ * Determine if the camera is likely the front camera.
+ * This function checks for "front" in device label (when accessible).
+ */
+function isCurrentCameraFront(devices, idx) {
+    if (!Array.isArray(devices)) return false;
+    if (idx < 0 || idx >= devices.length) return false;
+    const device = devices[idx];
+    // If device label is present (might require device access)
+    if (device && typeof device.label === 'string') {
+        if (device.label.toLowerCase().includes('front')) return true;
+        if (device.label.toLowerCase().includes('user')) return true; // Some browsers use 'user'
+        if (device.label.toLowerCase().includes('selfie')) return true;
+    }
+    // If label is not available (before permission), use index 0 as likely front camera (mobile devices)
+    if (idx === 0) return true;
+    return false;
+}
+
+function setVideoOrHide(videoElem, stream, enabled, flipHorizontally = false) {
+    if (!videoElem) return;
     if (!stream || !enabled || !hasEnabledVideoTrack(stream)) {
         videoElem.srcObject = null;
         videoElem.classList.add('video-hidden');
+        videoElem.style.transform = ""; // Reset flip
     } else {
         if (videoElem.srcObject !== stream) videoElem.srcObject = stream;
         videoElem.classList.remove('video-hidden');
+        // If requested, flip horizontally (mirror)
+        if (flipHorizontally) {
+            videoElem.style.transform = "scaleX(-1)";
+        } else {
+            videoElem.style.transform = "";
+        }
     }
 }
 
@@ -115,9 +143,13 @@ async function getVideoInputDevices() {
     return devices.filter(device => device.kind === 'videoinput');
 }
 
+/**
+ * Update outgoing video previews. Flip horizontally (mirror) if using front camera.
+ */
 function updateAllOutgoingVideoPreviews() {
+    const flip = isFrontCamera;
     document.querySelectorAll('video.outgoingVideo').forEach(vid => {
-        setVideoOrHide(vid, outgoingVideoStream, videoEnabled);
+        setVideoOrHide(vid, outgoingVideoStream, videoEnabled, flip);
     });
 }
 
@@ -137,10 +169,12 @@ function syncMediaToggles() {
         outgoingVideoStream.getAudioTracks().forEach(t => t.enabled = audioEnabled);
     }
 
+    // On the incomingVideo (the remote), flip if remote is using front camera.
+    // For simplicity, mirror only when I am using front camera.
     if (incomingVideo) {
-        setVideoOrHide(incomingVideo, remoteStream, true);
-        incomingVideo.muted = !audioEnabled;
-        incomingVideo.volume = audioEnabled ? 1 : 0;
+        setVideoOrHide(incomingVideo, remoteStream, true, isFrontCamera);
+        incomingVideo.muted = false;
+        incomingVideo.volume = 1;
     }
 }
 
@@ -151,6 +185,9 @@ async function switchToNextCamera() {
     currentVideoDeviceIndex = (currentVideoDeviceIndex + 1) % videoInputDevices.length;
     const nextDevice = videoInputDevices[currentVideoDeviceIndex];
 
+    // Determine front camera for flipping (needs to run before switching stream)
+    isFrontCamera = isCurrentCameraFront(videoInputDevices, currentVideoDeviceIndex);
+
     try {
         const newStream = await navigator.mediaDevices.getUserMedia({
             video: { deviceId: { exact: nextDevice.deviceId } },
@@ -158,10 +195,14 @@ async function switchToNextCamera() {
         });
 
         const videoTrack = newStream.getVideoTracks()[0];
-        
+
         if (pc) {
             const sender = pc.getSenders().find(s => s.track.kind === 'video');
             if (sender) sender.replaceTrack(videoTrack);
+        }
+
+        if (outgoingVideoStream) {
+            outgoingVideoStream.getTracks().forEach(track => track.stop());
         }
 
         outgoingVideoStream = newStream;
@@ -176,7 +217,7 @@ function setupWebRTC() {
     }
     pc = new RTCPeerConnection(servers);
     remoteStream = new MediaStream();
-    setVideoOrHide(incomingVideo, remoteStream, true);
+    setVideoOrHide(incomingVideo, remoteStream, true, isFrontCamera);
     if (outgoingVideoStream) {
         outgoingVideoStream.getTracks().forEach(track => pc.addTrack(track, outgoingVideoStream));
     }
@@ -274,11 +315,18 @@ async function leaveCallAndReturnToWaitingRoom() {
         }
     } catch (e) { }
 
-    setVideoOrHide(incomingVideo, null, false);
+    setVideoOrHide(incomingVideo, null, false, false);
 
     inCall.classList.add('removed');
     waitingRoom.classList.remove('removed');
-    resetRoomState(); 
+    resetRoomState();
+}
+
+// On first load, pick the likely front camera so the flip logic works
+async function determineInitialFrontCameraSetting() {
+    videoInputDevices = await getVideoInputDevices();
+    currentVideoDeviceIndex = 0;
+    isFrontCamera = isCurrentCameraFront(videoInputDevices, currentVideoDeviceIndex);
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -296,25 +344,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         const options = roomSetting.querySelectorAll('p');
         options.forEach(option => {
             option.addEventListener('click', () => {
-                if (option.id === 'selectedSetting') return; 
+                if (option.id === 'selectedSetting') return;
 
                 options.forEach(opt => opt.id = '');
                 option.id = 'selectedSetting';
-                resetRoomState(); 
+                resetRoomState();
             });
         });
     }
 
+    // Determine if starting camera is front for flipping logic
+    await determineInitialFrontCameraSetting();
+
     try {
-        outgoingVideoStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        const firstDevice = videoInputDevices.length > 0 ? videoInputDevices[0] : null;
+        outgoingVideoStream = await navigator.mediaDevices.getUserMedia({ video: firstDevice ? { deviceId: { exact: firstDevice.deviceId } } : true, audio: true });
         updateAllOutgoingVideoPreviews();
     } catch (e) {
         console.warn("Initial camera access denied or unavailable.");
         updateAllOutgoingVideoPreviews();
-        setVideoOrHide(incomingVideo, null, false);
+        setVideoOrHide(incomingVideo, null, false, false);
     }
 
-    setVideoOrHide(incomingVideo, remoteStream, true);
+    setVideoOrHide(incomingVideo, remoteStream, true, isFrontCamera);
 
     enterCallBtn.addEventListener('click', async () => {
         if (enterCallBtn.classList.contains('disabled')) return;
@@ -385,6 +437,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         btn.addEventListener('click', async () => {
             if (await ensurePermission('audio')) {
                 audioEnabled = !audioEnabled;
+                if (outgoingVideoStream) {
+                    outgoingVideoStream.getAudioTracks().forEach(t => t.enabled = audioEnabled);
+                }
                 syncMediaToggles();
             }
         });
@@ -392,7 +447,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.querySelectorAll('.cameraRotate').forEach(btn => {
         btn.addEventListener('click', async () => {
-            if (await ensurePermission('camera') && videoEnabled) {
+            videoInputDevices = await getVideoInputDevices();
+            if (videoInputDevices.length === 0) return;
+            currentVideoDeviceIndex = (currentVideoDeviceIndex + 1) % videoInputDevices.length;
+            // Determine front camera before switching
+            isFrontCamera = isCurrentCameraFront(videoInputDevices, currentVideoDeviceIndex);
+            if (videoEnabled) {
                 await switchToNextCamera();
             }
         });
