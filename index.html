@@ -164,18 +164,13 @@
             </svg>
         </div>
     </div>
-    <div id="knockPopup" class="removed"
-        style="position: fixed; top: 0; left: 0; width: 100dvw; height: 100dvh; background: rgba(0,0,0,0.4); backdrop-filter: blur(16px); z-index: 100; display: flex; align-items: center; justify-content: center; flex-direction: column;">
-        <div class="card"
-            style="background: rgba(255,255,255,0.7); padding: 32px; border-radius: 32px; text-align: center; max-width: 80%;">
-            <h2 id="knockMessage" style="margin-bottom: 24px; font-weight: 500; font-size: 1.2rem;">Someone wants to
-                join</h2>
-            <div style="display: flex; gap: 16px; justify-content: center;">
-                <button id="declineKnock" class="button"
-                    style="background: rgba(255,0,0,0.15); color: red; padding: 12px 32px;">Decline</button>
-                <button id="acceptKnock" class="button accented"
-                    style="width: auto; padding: 12px 32px;">Accept</button>
-            </div>
+    <div id="knockPopup" class="removed glassy">
+        <p id="knockMessage">
+            Someone wants to join
+        </p>
+        <div id="knockButtons">
+            <button id="declineKnock">Decline</button>
+            <button id="acceptKnock">Accept</button>
         </div>
     </div>
     <script src="https://hishamc24.github.io/MNMLUI/MNMLUI.js"></script>

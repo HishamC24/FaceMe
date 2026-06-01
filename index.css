@@ -218,6 +218,54 @@ svg {
     object-fit: cover;
 }
 
+#knockPopup {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 16px;
+    border-radius: 32px;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+}
+
+#knockMessage {
+    margin: 0px 8px;
+    width: calc(88px * 2 + 8px - 16px);
+    word-break: break-word;
+}
+
+#knockButtons {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    width: calc(88px * 2 + 8px);
+}
+
+#declineKnock,
+#acceptKnock {
+    width: 88px;
+    height: 32px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border-radius: 16px;
+    cursor: pointer;
+    transition: background 0.25s ease-in-out;
+}
+
+#acceptKnock {
+    background: rgba(128, 0, 255, 0.5);
+}
+
+#declineKnock {
+    background: rgba(0, 0, 0, 0.5);
+}
+
 .card {
     margin: 0px !important;
 }
