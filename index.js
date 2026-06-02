@@ -1,4 +1,4 @@
-console.log("4")
+console.log("5")
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
 import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
@@ -46,7 +46,7 @@ const inCall = document.getElementById('inCall');
 const incomingVideo = document.getElementById('incomingVideo');
 const endCallBtn = document.getElementById('endCall');
 const roomSetting = document.getElementById('roomSetting');
-fullscreenBtn: document.getElementById('fullscreen')
+const fullscreenBtn = document.getElementById('fullscreen')
 
 const knockPopup = document.getElementById('knockPopup');
 const knockMessage = document.getElementById('knockMessage');
@@ -453,8 +453,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     syncMediaToggles();
     updateButtons();
 
-    if (UI.fullscreenBtn) {
-        UI.fullscreenBtn.addEventListener('click', async () => {
+    if (fullscreenBtn) {
+        fullscreenBtn.addEventListener('click', async () => {
             try {
                 const docEl = document.documentElement;
                 if (!document.fullscreenElement) {
