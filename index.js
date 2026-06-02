@@ -82,7 +82,7 @@ function persistMediaStates() {
 function hasActiveVideoTrack(stream) {
     if (!stream) return false;
     const videoTracks = stream.getVideoTracks();
-    return videoTracks.some(track => track.enabled && track.readyState === 'live' && !track.muted);
+    return videoTracks.some(track => track.enabled && track.readyState === 'live');
 }
 
 function isCurrentCameraFront(device) {
@@ -235,14 +235,11 @@ function syncMediaUI() {
         btn.querySelector('#audioDisabled')?.classList.toggle('removed', MediaState.audioEnabled);
     });
 
-    setVideoRenderState(UI.incomingVideo, MediaState.remoteStream, true, false);
-
     if (UI.incomingVideo) {
-        UI.incomingVideo.muted = true;
-    }
-
-    if (MediaState.remoteAudio.srcObject && MediaState.remoteAudio.paused) {
-        MediaState.remoteAudio.play().catch(e => console.warn("Mobile audio autoplay blocked:", e));
+        if (UI.incomingVideo.srcObject !== MediaState.remoteStream) {
+            UI.incomingVideo.srcObject = MediaState.remoteStream;
+        }
+        UI.incomingVideo.muted = false;
     }
 }
 
@@ -265,8 +262,12 @@ function setupWebRTC() {
         const track = event.track;
         MediaState.remoteStream.addTrack(track);
 
-        if (MediaState.remoteAudio.srcObject !== MediaState.remoteStream) {
-            MediaState.remoteAudio.srcObject = MediaState.remoteStream;
+        if (UI.incomingVideo) {
+            if (UI.incomingVideo.srcObject !== MediaState.remoteStream) {
+                UI.incomingVideo.srcObject = MediaState.remoteStream;
+            }
+            UI.incomingVideo.muted = false;
+            UI.incomingVideo.play().catch(e => console.warn("Autoplay blocked:", e));
         }
 
         track.onmute = () => syncMediaUI();
