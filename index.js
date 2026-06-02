@@ -1,4 +1,4 @@
-console.log("1")
+console.log("2")
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
 import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
@@ -237,12 +237,6 @@ function syncMediaUI() {
         btn.querySelector('#audioDisabled')?.classList.toggle('removed', MediaState.audioEnabled);
     });
 
-    if (UI.incomingVideo) {
-        if (UI.incomingVideo.srcObject !== MediaState.remoteStream) {
-            UI.incomingVideo.srcObject = MediaState.remoteStream;
-        }
-        UI.incomingVideo.muted = false;
-    }
 }
 
 function setupWebRTC() {
@@ -253,21 +247,22 @@ function setupWebRTC() {
     RTCState.pc = new RTCPeerConnection(servers);
     MediaState.remoteStream = new MediaStream();
 
+    const audioTransceiver = RTCState.pc.addTransceiver('audio', { direction: 'sendrecv' });
+    const videoTransceiver = RTCState.pc.addTransceiver('video', { direction: 'sendrecv' });
+
     const audioTrack = MediaState.outgoingStream?.getAudioTracks()[0];
     const videoTrack = MediaState.outgoingStream?.getVideoTracks()[0];
-
-    RTCState.pc.addTransceiver(audioTrack || 'audio', { direction: 'sendrecv' });
-    RTCState.pc.addTransceiver(videoTrack || 'video', { direction: 'sendrecv' });
-
+    if (audioTrack) audioTransceiver.sender.replaceTrack(audioTrack);
+    if (videoTrack) videoTransceiver.sender.replaceTrack(videoTrack);
 
     RTCState.pc.ontrack = event => {
         const track = event.track;
-        MediaState.remoteStream.addTrack(track);
+        if (!MediaState.remoteStream.getTrackById(track.id)) {
+            MediaState.remoteStream.addTrack(track);
+        }
 
-        if (UI.incomingVideo) {
-            if (UI.incomingVideo.srcObject !== MediaState.remoteStream) {
-                UI.incomingVideo.srcObject = MediaState.remoteStream;
-            }
+        if (UI.incomingVideo && UI.incomingVideo.srcObject !== MediaState.remoteStream) {
+            UI.incomingVideo.srcObject = MediaState.remoteStream;
             UI.incomingVideo.muted = false;
             UI.incomingVideo.play().catch(e => console.warn("Autoplay blocked:", e));
         }
@@ -280,9 +275,18 @@ function setupWebRTC() {
     };
 
     RTCState.pc.onconnectionstatechange = () => {
+        console.log("RTC connection state:", RTCState.pc.connectionState);
         if (["disconnected", "failed", "closed"].includes(RTCState.pc.connectionState)) {
             teardownCall();
         }
+    };
+
+    RTCState.pc.onsignalingstatechange = () => {
+        console.log("RTC signaling state:", RTCState.pc.signalingState);
+    };
+
+    RTCState.pc.onicegatheringstatechange = () => {
+        console.log("ICE gathering state:", RTCState.pc.iceGatheringState);
     };
 }
 
