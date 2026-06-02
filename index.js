@@ -181,12 +181,15 @@ async function acquireLocalStream() {
     MediaState.outgoingStream = await navigator.mediaDevices.getUserMedia(constraints);
 
     if (RTCState.pc) {
-        const senders = RTCState.pc.getSenders();
-        MediaState.outgoingStream.getTracks().forEach(track => {
-            const sender = senders.find(s => s.track && s.track.kind === track.kind);
-            if (sender) sender.replaceTrack(track);
-            else RTCState.pc.addTrack(track, MediaState.outgoingStream);
-        });
+        const transceivers = RTCState.pc.getTransceivers();
+        const audioSender = transceivers.find(t => t.receiver.track.kind === 'audio')?.sender;
+        const videoSender = transceivers.find(t => t.receiver.track.kind === 'video')?.sender;
+
+        const newAudioTrack = MediaState.outgoingStream.getAudioTracks()[0];
+        const newVideoTrack = MediaState.outgoingStream.getVideoTracks()[0];
+
+        if (audioSender && newAudioTrack) audioSender.replaceTrack(newAudioTrack);
+        if (videoSender && newVideoTrack) videoSender.replaceTrack(newVideoTrack);
     }
 }
 
@@ -242,12 +245,16 @@ function setupWebRTC() {
     RTCState.pc = new RTCPeerConnection(servers);
     MediaState.remoteStream = new MediaStream();
 
+    const audioTransceiver = RTCState.pc.addTransceiver('audio', { direction: 'sendrecv' });
+    const videoTransceiver = RTCState.pc.addTransceiver('video', { direction: 'sendrecv' });
+
     if (MediaState.outgoingStream) {
-        MediaState.outgoingStream.getTracks().forEach(track => RTCState.pc.addTrack(track, MediaState.outgoingStream));
+        MediaState.outgoingStream.getAudioTracks().forEach(track => audioTransceiver.sender.replaceTrack(track));
+        MediaState.outgoingStream.getVideoTracks().forEach(track => videoTransceiver.sender.replaceTrack(track));
     }
 
     RTCState.pc.ontrack = event => {
-        event.streams[0].getTracks().forEach(track => MediaState.remoteStream.addTrack(track));
+        MediaState.remoteStream.addTrack(event.track);
         syncMediaUI();
     };
 
@@ -454,10 +461,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 MediaState.audioEnabled = !MediaState.audioEnabled;
                 persistMediaStates();
 
-                if (MediaState.outgoingStream) {
-                    MediaState.outgoingStream.getAudioTracks().forEach(t => t.enabled = MediaState.audioEnabled);
-                } else if (MediaState.audioEnabled) {
-                    await acquireLocalStream();
+                if (MediaState.audioEnabled) {
+                    const hasLiveAudio = MediaState.outgoingStream &&
+                        MediaState.outgoingStream.getAudioTracks().some(t => t.readyState === 'live');
+
+                    if (!hasLiveAudio) {
+                        await acquireLocalStream();
+                    } else {
+                        MediaState.outgoingStream.getAudioTracks().forEach(t => t.enabled = true);
+                    }
+                } else {
+                    if (MediaState.outgoingStream) {
+                        MediaState.outgoingStream.getAudioTracks().forEach(t => t.stop());
+                    }
                 }
                 syncMediaUI();
             }
