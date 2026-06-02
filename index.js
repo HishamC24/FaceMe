@@ -1,4 +1,4 @@
-console.log("3")
+console.log("4")
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
 import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
@@ -469,4 +469,5 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.warn("Fullscreen toggle failed", e);
             }
         });
-    });
+    }
+});
