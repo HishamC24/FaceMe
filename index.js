@@ -282,21 +282,23 @@ async function executeCallAsCreator(roomId) {
     await RTCState.pc.setLocalDescription(offerDescription);
     await updateDoc(callDoc, { offer: { sdp: offerDescription.sdp, type: offerDescription.type }, participants: 2 });
 
-    const callUnsub = onSnapshot(callDoc, snapshot => {
+    const callUnsub = onSnapshot(callDoc, async snapshot => {
         const data = snapshot.data();
+
         if (!RTCState.pc.currentRemoteDescription && data?.answer) {
-            RTCState.pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+            await RTCState.pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+
+            const answerUnsub = onSnapshot(collection(callDoc, 'answerCandidates'), snapshot => {
+                snapshot.docChanges().forEach(change => {
+                    if (change.type === 'added') RTCState.pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                });
+            });
+            AppState.unsubs.push(answerUnsub);
         }
+
         if (data?.hasEnded) teardownCall();
     });
     AppState.unsubs.push(callUnsub);
-
-    const answerUnsub = onSnapshot(collection(callDoc, 'answerCandidates'), snapshot => {
-        snapshot.docChanges().forEach(change => {
-            if (change.type === 'added') RTCState.pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
-        });
-    });
-    AppState.unsubs.push(answerUnsub);
 
     transitionToInCall();
 }
@@ -309,24 +311,27 @@ async function executeCallAsJoiner(roomId) {
         if (event.candidate) addDoc(collection(callDoc, 'answerCandidates'), event.candidate.toJSON());
     };
 
-    const callData = (await getDoc(callDoc)).data();
-    await RTCState.pc.setRemoteDescription(new RTCSessionDescription(callData.offer));
+    const callUnsub = onSnapshot(callDoc, async snapshot => {
+        const data = snapshot.data();
 
-    const answerDescription = await RTCState.pc.createAnswer();
-    await RTCState.pc.setLocalDescription(answerDescription);
-    await updateDoc(callDoc, { answer: { type: answerDescription.type, sdp: answerDescription.sdp }, participants: 2 });
+        if (data?.offer && !RTCState.pc.currentRemoteDescription) {
+            await RTCState.pc.setRemoteDescription(new RTCSessionDescription(data.offer));
 
-    const callUnsub = onSnapshot(callDoc, snapshot => {
-        if (snapshot.data()?.hasEnded) teardownCall();
+            const answerDescription = await RTCState.pc.createAnswer();
+            await RTCState.pc.setLocalDescription(answerDescription);
+            await updateDoc(callDoc, { answer: { type: answerDescription.type, sdp: answerDescription.sdp }, participants: 2 });
+
+            const offerUnsub = onSnapshot(collection(callDoc, 'offerCandidates'), snapshot => {
+                snapshot.docChanges().forEach(change => {
+                    if (change.type === 'added') RTCState.pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                });
+            });
+            AppState.unsubs.push(offerUnsub);
+        }
+
+        if (data?.hasEnded) teardownCall();
     });
     AppState.unsubs.push(callUnsub);
-
-    const offerUnsub = onSnapshot(collection(callDoc, 'offerCandidates'), snapshot => {
-        snapshot.docChanges().forEach(change => {
-            if (change.type === 'added') RTCState.pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
-        });
-    });
-    AppState.unsubs.push(offerUnsub);
 
     transitionToInCall();
 }
