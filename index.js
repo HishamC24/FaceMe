@@ -236,9 +236,13 @@ function syncMediaUI() {
     });
 
     setVideoRenderState(UI.incomingVideo, MediaState.remoteStream, true, false);
+
     if (UI.incomingVideo) {
-        UI.incomingVideo.muted = false;
-        UI.incomingVideo.volume = 1;
+        UI.incomingVideo.muted = true;
+    }
+
+    if (MediaState.remoteAudio.srcObject && MediaState.remoteAudio.paused) {
+        MediaState.remoteAudio.play().catch(e => console.warn("Mobile audio autoplay blocked:", e));
     }
 }
 
@@ -250,8 +254,11 @@ function setupWebRTC() {
     RTCState.pc = new RTCPeerConnection(servers);
     MediaState.remoteStream = new MediaStream();
 
-    const audioTransceiver = RTCState.pc.addTransceiver('audio', { direction: 'sendrecv' });
-    const videoTransceiver = RTCState.pc.addTransceiver('video', { direction: 'sendrecv' });
+    const audioTrack = MediaState.outgoingStream?.getAudioTracks()[0];
+    const videoTrack = MediaState.outgoingStream?.getVideoTracks()[0];
+
+    RTCState.pc.addTransceiver(audioTrack || 'audio', { direction: 'sendrecv' });
+    RTCState.pc.addTransceiver(videoTrack || 'video', { direction: 'sendrecv' });
 
     if (MediaState.outgoingStream) {
         MediaState.outgoingStream.getAudioTracks().forEach(track => audioTransceiver.sender.replaceTrack(track));
