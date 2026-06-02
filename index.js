@@ -296,6 +296,8 @@ async function executeCallAsCreator(roomId) {
         if (event.candidate) addDoc(collection(callDoc, 'offerCandidates'), event.candidate.toJSON());
     };
 
+    await new Promise(resolve => setTimeout(resolve, 500));
+
     const offerDescription = await RTCState.pc.createOffer();
     await RTCState.pc.setLocalDescription(offerDescription);
     await updateDoc(callDoc, { offer: { sdp: offerDescription.sdp, type: offerDescription.type }, participants: 2 });
@@ -329,6 +331,8 @@ async function executeCallAsJoiner(roomId) {
         if (event.candidate) addDoc(collection(callDoc, 'answerCandidates'), event.candidate.toJSON());
     };
 
+    let hasTransitioned = false;
+
     const callUnsub = onSnapshot(callDoc, async snapshot => {
         const data = snapshot.data();
 
@@ -345,13 +349,16 @@ async function executeCallAsJoiner(roomId) {
                 });
             });
             AppState.unsubs.push(offerUnsub);
+
+            if (!hasTransitioned) {
+                hasTransitioned = true;
+                transitionToInCall();
+            }
         }
 
         if (data?.hasEnded) teardownCall();
     });
     AppState.unsubs.push(callUnsub);
-
-    transitionToInCall();
 }
 
 async function teardownCall() {
