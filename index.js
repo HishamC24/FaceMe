@@ -29,9 +29,12 @@ const MediaState = {
     audioEnabled: getStoredBool("f2f_audioEnabled", false),
     outgoingStream: null,
     remoteStream: new MediaStream(),
+    remoteAudio: new Audio(),
     videoDevices: [],
     currentDeviceIndex: 0
 };
+
+MediaState.remoteAudio.autoplay = true;
 
 const RTCState = {
     pc: null
@@ -76,8 +79,10 @@ function persistMediaStates() {
     setStoredBool("f2f_audioEnabled", MediaState.audioEnabled);
 }
 
-function hasEnabledVideoTrack(stream) {
-    return stream?.getVideoTracks().some(track => track.enabled) ?? false;
+function hasActiveVideoTrack(stream) {
+    if (!stream) return false;
+    const videoTracks = stream.getVideoTracks();
+    return videoTracks.some(track => track.enabled && track.readyState === 'live' && !track.muted);
 }
 
 function isCurrentCameraFront(device) {
@@ -126,7 +131,7 @@ function transitionToInCall() {
 
 function setVideoRenderState(videoElem, stream, enabled, flipHorizontally = false) {
     if (!videoElem) return;
-    if (!stream || !enabled || !hasEnabledVideoTrack(stream)) {
+    if (!stream || !enabled || !hasActiveVideoTrack(stream)) {
         videoElem.srcObject = null;
         videoElem.classList.add('video-hidden');
         videoElem.style.transform = "";
@@ -254,7 +259,17 @@ function setupWebRTC() {
     }
 
     RTCState.pc.ontrack = event => {
-        MediaState.remoteStream.addTrack(event.track);
+        const track = event.track;
+        MediaState.remoteStream.addTrack(track);
+
+        if (MediaState.remoteAudio.srcObject !== MediaState.remoteStream) {
+            MediaState.remoteAudio.srcObject = MediaState.remoteStream;
+        }
+
+        track.onmute = () => syncMediaUI();
+        track.onunmute = () => syncMediaUI();
+        track.onended = () => syncMediaUI();
+
         syncMediaUI();
     };
 
@@ -444,7 +459,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 persistMediaStates();
 
                 if (MediaState.videoEnabled) {
-                    if (!MediaState.outgoingStream || !hasEnabledVideoTrack(MediaState.outgoingStream)) {
+                    if (!MediaState.outgoingStream || !hasActiveVideoTrack(MediaState.outgoingStream)) {
                         await acquireLocalStream();
                     } else {
                         MediaState.outgoingStream.getVideoTracks().forEach(t => t.enabled = true);
