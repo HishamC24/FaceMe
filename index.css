@@ -52,7 +52,7 @@ svg {
 
 #roomSetting {
     display: flex;
-    background-color: #f1f2f3;
+    background-color: #f2f2f2;
     border-radius: 999px;
     padding: 4px;
     margin-bottom: 16px;
@@ -85,11 +85,6 @@ svg {
     padding: 0px 16px;
     color: #000;
     outline: none;
-}
-
-#nameInput:focus,
-#idInput:focus {
-    color: #000;
 }
 
 #saveName.disabled,
@@ -266,6 +261,28 @@ svg {
     background: rgba(0, 0, 0, 0.5);
 }
 
+@media (prefers-color-scheme: dark) {
+
+    #nameInput,
+    #idInput {
+        background: #000000;
+        color: #ffffff;
+    }
+
+    #saveName.disabled,
+    #enterCall.disabled {
+        background-color: hwb(270 0% 50%);
+    }
+
+    #roomSetting {
+        background-color: #000000;
+    }
+
+    #roomSetting p#selectedSetting {
+        background-color: #1A1A1A;
+    }
+}
+
 .card {
     margin: 0px !important;
 }
@@ -296,8 +313,23 @@ svg {
     gap: 12px;
 }
 
+#fullscreen {
+    position: fixed;
+    top: 40px;
+    left: 40px;
+    z-index: 1;
+}
+
 #install-btn {
     position: fixed;
     top: 32px;
     right: 32px;
+}
+
+:fullscreen::backdrop {
+    background: transparent;
+}
+
+:-webkit-full-screen::backdrop {
+    background: transparent;
 }
