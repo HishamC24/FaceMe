@@ -1,4 +1,4 @@
-console.log("5")
+console.log("6")
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
 import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
@@ -172,7 +172,7 @@ function syncMediaToggles() {
 
 async function switchToNextCamera() {
     videoInputDevices = await getVideoInputDevices();
-    if (videoInputDevices.length === 0) return;
+    if (videoInputDevices.length <= 1) return;
 
     currentVideoDeviceIndex = (currentVideoDeviceIndex + 1) % videoInputDevices.length;
     const nextDevice = videoInputDevices[currentVideoDeviceIndex];
@@ -185,11 +185,13 @@ async function switchToNextCamera() {
             audio: audioEnabled
         });
 
+        newStream.getVideoTracks().forEach(t => t.enabled = videoEnabled);
+
         const videoTrack = newStream.getVideoTracks()[0];
 
         if (pc) {
-            const sender = pc.getSenders().find(s => s.track.kind === 'video');
-            if (sender) sender.replaceTrack(videoTrack);
+            const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+            if (sender && videoTrack) sender.replaceTrack(videoTrack);
         }
 
         if (outgoingVideoStream) {
@@ -436,13 +438,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     document.querySelectorAll('.cameraRotate').forEach(btn => {
         btn.addEventListener('click', async () => {
-            videoInputDevices = await getVideoInputDevices();
-            if (videoInputDevices.length === 0) return;
-            currentVideoDeviceIndex = (currentVideoDeviceIndex + 1) % videoInputDevices.length;
-            isFrontCamera = isCurrentCameraFront(videoInputDevices, currentVideoDeviceIndex);
-            if (videoEnabled) {
-                await switchToNextCamera();
-            }
+            await switchToNextCamera();
         });
     });
 
@@ -458,7 +454,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 const docEl = document.documentElement;
                 if (!document.fullscreenElement) {
-                    const elem = (UI.inCall && !UI.inCall.classList.contains('removed')) ? UI.inCall : document.body;
+                    const elem = (inCall && !inCall.classList.contains('removed')) ? inCall : document.body;
+
                     if (elem.requestFullscreen) await elem.requestFullscreen();
                     else if (elem.webkitRequestFullscreen) await elem.webkitRequestFullscreen();
                 } else {
