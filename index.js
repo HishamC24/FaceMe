@@ -260,10 +260,6 @@ function setupWebRTC() {
     RTCState.pc.addTransceiver(audioTrack || 'audio', { direction: 'sendrecv' });
     RTCState.pc.addTransceiver(videoTrack || 'video', { direction: 'sendrecv' });
 
-    if (MediaState.outgoingStream) {
-        MediaState.outgoingStream.getAudioTracks().forEach(track => audioTransceiver.sender.replaceTrack(track));
-        MediaState.outgoingStream.getVideoTracks().forEach(track => videoTransceiver.sender.replaceTrack(track));
-    }
 
     RTCState.pc.ontrack = event => {
         const track = event.track;
