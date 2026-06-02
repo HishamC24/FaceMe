@@ -1,4 +1,4 @@
-console.log("2")
+console.log("3")
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
 import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
@@ -19,96 +19,96 @@ const servers = {
     iceServers: [{ urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }]
 };
 
-const AppState = {
-    currentRoomId: null,
-    saveNameConfirmed: false,
-    isFrontCamera: false,
-    unsubs: []
-};
+let pc = null;
+let remoteStream = new MediaStream();
+let outgoingVideoStream = null;
+let videoInputDevices = [];
+let currentVideoDeviceIndex = 0;
+let isFrontCamera = false;
 
-const MediaState = {
-    videoEnabled: getStoredBool("f2f_videoEnabled", false),
-    audioEnabled: getStoredBool("f2f_audioEnabled", false),
-    outgoingStream: null,
-    remoteStream: new MediaStream(),
-    remoteAudio: new Audio(),
-    videoDevices: [],
-    currentDeviceIndex: 0
-};
+let saveNameConfirmed = false;
+let videoEnabled = true;
+let audioEnabled = true;
+let currentRoomId = null;
 
-MediaState.remoteAudio.autoplay = true;
-
-const RTCState = {
-    pc: null
-};
-
-const UI = {
-    nameInput: document.getElementById('nameInput'),
-    idInput: document.getElementById('idInput'),
-    saveNameBtn: document.getElementById('saveName'),
-    enterCallBtn: document.getElementById('enterCall'),
-    waitingRoom: document.getElementById('waitingRoom'),
-    inCall: document.getElementById('inCall'),
-    incomingVideo: document.getElementById('incomingVideo'),
-    endCallBtn: document.getElementById('endCall'),
-    roomSetting: document.getElementById('roomSetting'),
-    knockPopup: document.getElementById('knockPopup'),
-    knockMessage: document.getElementById('knockMessage'),
-    acceptKnockBtn: document.getElementById('acceptKnock'),
-    declineKnockBtn: document.getElementById('declineKnock'),
-    outgoingVideos: document.querySelectorAll('video.outgoingVideo'),
-    videoToggles: document.querySelectorAll('.videoEnabledToggle'),
-    audioToggles: document.querySelectorAll('.audioEnabledToggle'),
-    cameraRotates: document.querySelectorAll('.cameraRotate'),
-    fullscreenBtn: document.getElementById('fullscreen')
-};
+let callUnsub = null;
+let roomWaitingUnsub = null;
 
 const enterCallOriginalSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M9 8v-2a2 2 0 0 1 2 -2h7a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-7a2 2 0 0 1 -2 -2v-2" /><path d="M3 12h13l-3 -3" /><path d="M13 15l3 -3" /></svg>`;
 const spinnerSVG = `<svg class="waiting-spinner" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M12 6l0 -3" /><path d="M16.25 7.75l2.15 -2.15" /><path d="M18 12l3 0" /><path d="M16.25 16.25l2.15 2.15" /><path d="M12 18l0 3" /><path d="M7.75 16.25l-2.15 2.15" /><path d="M6 12l-3 0" /><path d="M7.75 7.75l-2.15 -2.15" /></svg>`;
 
-function getStoredBool(key, def) {
-    return window.localStorage && localStorage.getItem(key) !== null
-        ? localStorage.getItem(key) === "true"
-        : def;
+const nameInput = document.getElementById('nameInput');
+const idInput = document.getElementById('idInput');
+const saveNameBtn = document.getElementById('saveName');
+const enterCallBtn = document.getElementById('enterCall');
+const waitingRoom = document.getElementById('waitingRoom');
+const inCall = document.getElementById('inCall');
+const incomingVideo = document.getElementById('incomingVideo');
+const endCallBtn = document.getElementById('endCall');
+const roomSetting = document.getElementById('roomSetting');
+fullscreenBtn: document.getElementById('fullscreen')
+
+const knockPopup = document.getElementById('knockPopup');
+const knockMessage = document.getElementById('knockMessage');
+const acceptKnockBtn = document.getElementById('acceptKnock');
+const declineKnockBtn = document.getElementById('declineKnock');
+
+
+function isCurrentCameraFront(devices, idx) {
+    if (!Array.isArray(devices)) return false;
+    if (idx < 0 || idx >= devices.length) return false;
+    const device = devices[idx];
+    if (device && typeof device.label === 'string') {
+        if (device.label.toLowerCase().includes('front')) return true;
+        if (device.label.toLowerCase().includes('user')) return true;
+        if (device.label.toLowerCase().includes('selfie')) return true;
+    }
+    if (idx === 0) return true;
+    return false;
 }
 
-function setStoredBool(key, value) {
-    if (window.localStorage) localStorage.setItem(key, value ? "true" : "false");
+function setVideoOrHide(videoElem, stream, enabled, flipHorizontally = false) {
+    if (!videoElem) return;
+    if (!stream || !enabled || !hasEnabledVideoTrack(stream)) {
+        videoElem.srcObject = null;
+        videoElem.classList.add('video-hidden');
+        videoElem.style.transform = "";
+    } else {
+        if (videoElem.srcObject !== stream) videoElem.srcObject = stream;
+        videoElem.classList.remove('video-hidden');
+        if (flipHorizontally) {
+            videoElem.style.transform = "scaleX(-1)";
+        } else {
+            videoElem.style.transform = "";
+        }
+    }
 }
 
-function persistMediaStates() {
-    setStoredBool("f2f_videoEnabled", MediaState.videoEnabled);
-    setStoredBool("f2f_audioEnabled", MediaState.audioEnabled);
-}
-
-function hasActiveVideoTrack(stream) {
+function hasEnabledVideoTrack(stream) {
     if (!stream) return false;
-    const videoTracks = stream.getVideoTracks();
-    return videoTracks.some(track => track.enabled && track.readyState === 'live');
+    const tracks = stream.getVideoTracks();
+    return tracks.length > 0 && tracks.some(track => track.enabled);
 }
 
-function isCurrentCameraFront(device) {
-    if (!device?.label) return true;
-    const label = device.label.toLowerCase();
-    return label.includes('front') || label.includes('user') || label.includes('selfie');
+function updateButtons() {
+    const hasName = nameInput.value.trim().length >= 1;
+    const hasId = idInput.value.trim().length >= 1;
+
+    saveNameBtn.classList.toggle('disabled', !hasName);
+    saveNameBtn.disabled = !hasName;
+
+    const canEnter = saveNameConfirmed && hasName && hasId;
+    enterCallBtn.classList.toggle('disabled', !canEnter);
+    enterCallBtn.disabled = !canEnter;
 }
 
-function updateFormValidation() {
-    const hasName = UI.nameInput.value.trim().length >= 1;
-    const hasId = UI.idInput.value.trim().length >= 1;
-
-    UI.saveNameBtn.classList.toggle('disabled', !hasName);
-    UI.saveNameBtn.disabled = !hasName;
-
-    const canEnter = AppState.saveNameConfirmed && hasName && hasId;
-    UI.enterCallBtn.classList.toggle('disabled', !canEnter);
-    UI.enterCallBtn.disabled = !canEnter;
-}
-
-function resetRoomUI() {
-    clearFirebaseListeners();
-    UI.enterCallBtn.innerHTML = enterCallOriginalSVG;
-    UI.knockPopup.classList.add('removed');
+function resetRoomState() {
+    if (roomWaitingUnsub) {
+        roomWaitingUnsub();
+        roomWaitingUnsub = null;
+    }
+    enterCallBtn.innerHTML = enterCallOriginalSVG;
+    knockPopup.classList.add('removed');
 }
 
 function addSpinnerToBtn(btn) {
@@ -124,404 +124,334 @@ function addSpinnerToBtn(btn) {
     }
 }
 
-function transitionToInCall() {
-    UI.waitingRoom.classList.add('removed');
-    UI.inCall.classList.remove('removed');
-    UI.knockPopup.classList.add('removed');
-    syncMediaUI();
+async function ensurePermission(type) {
+    try {
+        if (navigator.mediaDevices?.getUserMedia) {
+            await navigator.mediaDevices.getUserMedia(type === 'camera' ? { video: true } : { audio: true });
+            return true;
+        }
+    } catch (e) { }
+    return false;
 }
 
-function setVideoRenderState(videoElem, stream, enabled, flipHorizontally = false) {
-    if (!videoElem) return;
-    if (!stream || !enabled || !hasActiveVideoTrack(stream)) {
-        videoElem.srcObject = null;
-        videoElem.classList.add('video-hidden');
-        videoElem.style.transform = "";
-    } else {
-        if (videoElem.srcObject !== stream) videoElem.srcObject = stream;
-        videoElem.classList.remove('video-hidden');
-        videoElem.style.transform = flipHorizontally ? "scaleX(-1)" : "";
-    }
-}
-
-async function fetchVideoDevices() {
+async function getVideoInputDevices() {
     if (!navigator.mediaDevices?.enumerateDevices) return [];
     const devices = await navigator.mediaDevices.enumerateDevices();
     return devices.filter(device => device.kind === 'videoinput');
 }
 
-async function requestPermissions(type) {
-    try {
-        await navigator.mediaDevices.getUserMedia(type === 'camera' ? { video: true } : { audio: true });
-        return true;
-    } catch {
-        return false;
+function updateAllOutgoingVideoPreviews() {
+    const flip = isFrontCamera;
+    document.querySelectorAll('video.outgoingVideo').forEach(vid => {
+        setVideoOrHide(vid, outgoingVideoStream, videoEnabled, flip);
+    });
+}
+
+function syncMediaToggles() {
+    document.querySelectorAll('.videoEnabledToggle').forEach(btn => {
+        btn.querySelector('#videoEnabled')?.classList.toggle('removed', !videoEnabled);
+        btn.querySelector('#videoDisabled')?.classList.toggle('removed', videoEnabled);
+    });
+
+    document.querySelectorAll('.audioEnabledToggle').forEach(btn => {
+        btn.querySelector('#audioEnabled')?.classList.toggle('removed', !audioEnabled);
+        btn.querySelector('#audioDisabled')?.classList.toggle('removed', audioEnabled);
+    });
+
+    if (outgoingVideoStream) {
+        outgoingVideoStream.getVideoTracks().forEach(t => t.enabled = videoEnabled);
+        outgoingVideoStream.getAudioTracks().forEach(t => t.enabled = audioEnabled);
+    }
+
+    if (incomingVideo) {
+        setVideoOrHide(incomingVideo, remoteStream, true, false);
+        incomingVideo.muted = false;
+        incomingVideo.volume = 1;
     }
 }
 
-async function initMedia() {
-    MediaState.videoDevices = await fetchVideoDevices();
-    if (MediaState.videoDevices.length > 0) {
-        AppState.isFrontCamera = isCurrentCameraFront(MediaState.videoDevices[0]);
-    }
+async function switchToNextCamera() {
+    videoInputDevices = await getVideoInputDevices();
+    if (videoInputDevices.length === 0) return;
+
+    currentVideoDeviceIndex = (currentVideoDeviceIndex + 1) % videoInputDevices.length;
+    const nextDevice = videoInputDevices[currentVideoDeviceIndex];
+
+    isFrontCamera = isCurrentCameraFront(videoInputDevices, currentVideoDeviceIndex);
 
     try {
-        if (MediaState.videoEnabled || MediaState.audioEnabled) {
-            await acquireLocalStream();
+        const newStream = await navigator.mediaDevices.getUserMedia({
+            video: { deviceId: { exact: nextDevice.deviceId } },
+            audio: audioEnabled
+        });
+
+        const videoTrack = newStream.getVideoTracks()[0];
+
+        if (pc) {
+            const sender = pc.getSenders().find(s => s.track.kind === 'video');
+            if (sender) sender.replaceTrack(videoTrack);
         }
-    } catch (e) {
-        console.warn("Initial media access denied.", e);
-        MediaState.videoEnabled = false;
-        MediaState.audioEnabled = false;
-    }
-    updateOutgoingPreviews();
-    syncMediaUI();
-}
 
-async function acquireLocalStream() {
-    const targetDevice = MediaState.videoDevices[MediaState.currentDeviceIndex] || MediaState.videoDevices[0];
-    const constraints = {
-        video: MediaState.videoEnabled && targetDevice ? { deviceId: { exact: targetDevice.deviceId } } : false,
-        audio: MediaState.audioEnabled
-    };
+        if (outgoingVideoStream) {
+            outgoingVideoStream.getTracks().forEach(track => track.stop());
+        }
 
-    MediaState.outgoingStream = await navigator.mediaDevices.getUserMedia(constraints);
-
-    if (RTCState.pc) {
-        const transceivers = RTCState.pc.getTransceivers();
-        const audioSender = transceivers.find(t => t.receiver.track.kind === 'audio')?.sender;
-        const videoSender = transceivers.find(t => t.receiver.track.kind === 'video')?.sender;
-
-        const newAudioTrack = MediaState.outgoingStream.getAudioTracks()[0];
-        const newVideoTrack = MediaState.outgoingStream.getVideoTracks()[0];
-
-        if (audioSender && newAudioTrack) audioSender.replaceTrack(newAudioTrack);
-        if (videoSender && newVideoTrack) videoSender.replaceTrack(newVideoTrack);
-    }
-}
-
-function stopLocalStream() {
-    if (MediaState.outgoingStream) {
-        MediaState.outgoingStream.getTracks().forEach(track => track.stop());
-        MediaState.outgoingStream = null;
-    }
-}
-
-async function cycleCamera() {
-    if (MediaState.videoDevices.length <= 1) return;
-
-    MediaState.currentDeviceIndex = (MediaState.currentDeviceIndex + 1) % MediaState.videoDevices.length;
-    AppState.isFrontCamera = isCurrentCameraFront(MediaState.videoDevices[MediaState.currentDeviceIndex]);
-
-    if (MediaState.videoEnabled) {
-        stopLocalStream();
-        await acquireLocalStream();
-        updateOutgoingPreviews();
-    }
-}
-
-function updateOutgoingPreviews() {
-    UI.outgoingVideos.forEach(vid => {
-        setVideoRenderState(vid, MediaState.outgoingStream, MediaState.videoEnabled, AppState.isFrontCamera);
-    });
-}
-
-function syncMediaUI() {
-    UI.videoToggles.forEach(btn => {
-        btn.querySelector('#videoEnabled')?.classList.toggle('removed', !MediaState.videoEnabled);
-        btn.querySelector('#videoDisabled')?.classList.toggle('removed', MediaState.videoEnabled);
-    });
-
-    UI.audioToggles.forEach(btn => {
-        btn.querySelector('#audioEnabled')?.classList.toggle('removed', !MediaState.audioEnabled);
-        btn.querySelector('#audioDisabled')?.classList.toggle('removed', MediaState.audioEnabled);
-    });
-
+        outgoingVideoStream = newStream;
+        updateAllOutgoingVideoPreviews();
+        syncMediaToggles();
+    } catch (err) { console.error("Camera switch failed", err); }
 }
 
 function setupWebRTC() {
-    if (RTCState.pc && RTCState.pc.signalingState !== "closed") {
-        RTCState.pc.close();
+    if (pc && pc.signalingState !== "closed") {
+        pc.close();
     }
-
-    RTCState.pc = new RTCPeerConnection(servers);
-    MediaState.remoteStream = new MediaStream();
-
-    const audioTransceiver = RTCState.pc.addTransceiver('audio', { direction: 'sendrecv' });
-    const videoTransceiver = RTCState.pc.addTransceiver('video', { direction: 'sendrecv' });
-
-    const audioTrack = MediaState.outgoingStream?.getAudioTracks()[0];
-    const videoTrack = MediaState.outgoingStream?.getVideoTracks()[0];
-    if (audioTrack) audioTransceiver.sender.replaceTrack(audioTrack);
-    if (videoTrack) videoTransceiver.sender.replaceTrack(videoTrack);
-
-    RTCState.pc.ontrack = event => {
-        const track = event.track;
-        if (!MediaState.remoteStream.getTrackById(track.id)) {
-            MediaState.remoteStream.addTrack(track);
-        }
-
-        if (UI.incomingVideo && UI.incomingVideo.srcObject !== MediaState.remoteStream) {
-            UI.incomingVideo.srcObject = MediaState.remoteStream;
-            UI.incomingVideo.muted = false;
-            UI.incomingVideo.play().catch(e => console.warn("Autoplay blocked:", e));
-        }
-
-        track.onmute = () => syncMediaUI();
-        track.onunmute = () => syncMediaUI();
-        track.onended = () => syncMediaUI();
-
-        syncMediaUI();
+    pc = new RTCPeerConnection(servers);
+    remoteStream = new MediaStream();
+    setVideoOrHide(incomingVideo, remoteStream, true, false);
+    if (outgoingVideoStream) {
+        outgoingVideoStream.getTracks().forEach(track => pc.addTrack(track, outgoingVideoStream));
+    }
+    pc.ontrack = event => {
+        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        syncMediaToggles();
     };
-
-    RTCState.pc.onconnectionstatechange = () => {
-        console.log("RTC connection state:", RTCState.pc.connectionState);
-        if (["disconnected", "failed", "closed"].includes(RTCState.pc.connectionState)) {
-            teardownCall();
+    pc.onconnectionstatechange = () => {
+        if (["disconnected", "failed", "closed"].includes(pc.connectionState)) {
+            leaveCallAndReturnToWaitingRoom();
         }
-    };
-
-    RTCState.pc.onsignalingstatechange = () => {
-        console.log("RTC signaling state:", RTCState.pc.signalingState);
-    };
-
-    RTCState.pc.onicegatheringstatechange = () => {
-        console.log("ICE gathering state:", RTCState.pc.iceGatheringState);
     };
 }
 
-function clearFirebaseListeners() {
-    AppState.unsubs.forEach(unsub => unsub());
-    AppState.unsubs = [];
-}
-
-async function executeCallAsCreator(roomId) {
+async function startCallAsCreator(roomId) {
     setupWebRTC();
     const callDoc = doc(db, 'rooms', roomId);
 
-    RTCState.pc.onicecandidate = event => {
+    pc.onicecandidate = event => {
         if (event.candidate) addDoc(collection(callDoc, 'offerCandidates'), event.candidate.toJSON());
     };
 
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    const offerDescription = await RTCState.pc.createOffer();
-    await RTCState.pc.setLocalDescription(offerDescription);
+    const offerDescription = await pc.createOffer();
+    await pc.setLocalDescription(offerDescription);
     await updateDoc(callDoc, { offer: { sdp: offerDescription.sdp, type: offerDescription.type }, participants: 2 });
 
-    const callUnsub = onSnapshot(callDoc, async snapshot => {
+    if (callUnsub) callUnsub();
+    callUnsub = onSnapshot(callDoc, snapshot => {
         const data = snapshot.data();
-
-        if (!RTCState.pc.currentRemoteDescription && data?.answer) {
-            await RTCState.pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-
-            const answerUnsub = onSnapshot(collection(callDoc, 'answerCandidates'), snapshot => {
-                snapshot.docChanges().forEach(change => {
-                    if (change.type === 'added') RTCState.pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
-                });
-            });
-            AppState.unsubs.push(answerUnsub);
+        if (!pc.currentRemoteDescription && data?.answer) {
+            pc.setRemoteDescription(new RTCSessionDescription(data.answer));
         }
-
-        if (data?.hasEnded) teardownCall();
+        if (data?.hasEnded) leaveCallAndReturnToWaitingRoom();
     });
-    AppState.unsubs.push(callUnsub);
+
+    onSnapshot(collection(callDoc, 'answerCandidates'), snapshot => {
+        snapshot.docChanges().forEach(change => {
+            if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+        });
+    });
 
     transitionToInCall();
 }
 
-async function executeCallAsJoiner(roomId) {
+async function startCallAsJoiner(roomId) {
     setupWebRTC();
     const callDoc = doc(db, 'rooms', roomId);
 
-    RTCState.pc.onicecandidate = event => {
+    pc.onicecandidate = event => {
         if (event.candidate) addDoc(collection(callDoc, 'answerCandidates'), event.candidate.toJSON());
     };
 
-    let hasTransitioned = false;
+    const callData = (await getDoc(callDoc)).data();
+    await pc.setRemoteDescription(new RTCSessionDescription(callData.offer));
 
-    const callUnsub = onSnapshot(callDoc, async snapshot => {
-        const data = snapshot.data();
+    const answerDescription = await pc.createAnswer();
+    await pc.setLocalDescription(answerDescription);
+    await updateDoc(callDoc, { answer: { type: answerDescription.type, sdp: answerDescription.sdp }, participants: 2 });
 
-        if (data?.offer && !RTCState.pc.currentRemoteDescription) {
-            await RTCState.pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-
-            const answerDescription = await RTCState.pc.createAnswer();
-            await RTCState.pc.setLocalDescription(answerDescription);
-            await updateDoc(callDoc, { answer: { type: answerDescription.type, sdp: answerDescription.sdp }, participants: 2 });
-
-            const offerUnsub = onSnapshot(collection(callDoc, 'offerCandidates'), snapshot => {
-                snapshot.docChanges().forEach(change => {
-                    if (change.type === 'added') RTCState.pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
-                });
-            });
-            AppState.unsubs.push(offerUnsub);
-
-            if (!hasTransitioned) {
-                hasTransitioned = true;
-                transitionToInCall();
-            }
-        }
-
-        if (data?.hasEnded) teardownCall();
+    if (callUnsub) callUnsub();
+    callUnsub = onSnapshot(callDoc, snapshot => {
+        if (snapshot.data()?.hasEnded) leaveCallAndReturnToWaitingRoom();
     });
-    AppState.unsubs.push(callUnsub);
+
+    onSnapshot(collection(callDoc, 'offerCandidates'), snapshot => {
+        snapshot.docChanges().forEach(change => {
+            if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+        });
+    });
+
+    transitionToInCall();
 }
 
-async function teardownCall() {
-    clearFirebaseListeners();
+function transitionToInCall() {
+    waitingRoom.classList.add('removed');
+    inCall.classList.remove('removed');
+    knockPopup.classList.add('removed');
+    syncMediaToggles();
+}
 
-    if (AppState.currentRoomId) {
-        try {
-            await updateDoc(doc(db, 'rooms', AppState.currentRoomId), { hasEnded: true, participants: 0 });
-        } catch (e) { console.warn("Failed to update room end state", e); }
+async function leaveCallAndReturnToWaitingRoom() {
+    if (callUnsub) { callUnsub(); callUnsub = null; }
+
+    if (currentRoomId) {
+        try { await updateDoc(doc(db, 'rooms', currentRoomId), { hasEnded: true, participants: 0 }); } catch (e) { }
     }
 
-    if (RTCState.pc && RTCState.pc.signalingState !== "closed") {
-        RTCState.pc.close();
+    if (pc && pc.signalingState !== "closed") {
+        try { pc.close(); } catch (e) { }
     }
 
-    MediaState.remoteStream.getTracks().forEach(track => track.stop());
-    setVideoRenderState(UI.incomingVideo, null, false, false);
+    try {
+        if (remoteStream) {
+            remoteStream.getTracks().forEach(track => track.stop());
+        }
+    } catch (e) { }
 
-    UI.inCall.classList.add('removed');
-    UI.waitingRoom.classList.remove('removed');
-    resetRoomUI();
+    setVideoOrHide(incomingVideo, null, false, false);
+
+    inCall.classList.add('removed');
+    waitingRoom.classList.remove('removed');
+    resetRoomState();
+}
+
+async function determineInitialFrontCameraSetting() {
+    videoInputDevices = await getVideoInputDevices();
+    currentVideoDeviceIndex = 0;
+    isFrontCamera = isCurrentCameraFront(videoInputDevices, currentVideoDeviceIndex);
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    UI.nameInput?.addEventListener('input', updateFormValidation);
-    UI.idInput?.addEventListener('input', updateFormValidation);
+    nameInput?.addEventListener('input', updateButtons);
+    idInput?.addEventListener('input', updateButtons);
 
-    UI.saveNameBtn?.addEventListener('click', () => {
-        if (!UI.saveNameBtn.classList.contains('disabled')) {
-            AppState.saveNameConfirmed = true;
-            updateFormValidation();
+    saveNameBtn?.addEventListener('click', function () {
+        if (!this.classList.contains('disabled')) {
+            saveNameConfirmed = true;
+            updateButtons();
         }
     });
 
-    if (UI.roomSetting) {
-        const options = UI.roomSetting.querySelectorAll('p');
+    if (roomSetting) {
+        const options = roomSetting.querySelectorAll('p');
         options.forEach(option => {
             option.addEventListener('click', () => {
                 if (option.id === 'selectedSetting') return;
+
                 options.forEach(opt => opt.id = '');
                 option.id = 'selectedSetting';
-                resetRoomUI();
+                resetRoomState();
             });
         });
     }
 
-    UI.enterCallBtn.addEventListener('click', async () => {
-        if (UI.enterCallBtn.classList.contains('disabled')) return;
+    await determineInitialFrontCameraSetting();
 
-        const myName = UI.nameInput.value.trim();
-        AppState.currentRoomId = UI.idInput.value.trim();
+    try {
+        const firstDevice = videoInputDevices.length > 0 ? videoInputDevices[0] : null;
+        outgoingVideoStream = await navigator.mediaDevices.getUserMedia({ video: firstDevice ? { deviceId: { exact: firstDevice.deviceId } } : true, audio: true });
+        updateAllOutgoingVideoPreviews();
+    } catch (e) {
+        console.warn("Initial camera access denied or unavailable.");
+        updateAllOutgoingVideoPreviews();
+        setVideoOrHide(incomingVideo, null, false, false);
+    }
+
+    setVideoOrHide(incomingVideo, remoteStream, true, false);
+
+    enterCallBtn.addEventListener('click', async () => {
+        if (enterCallBtn.classList.contains('disabled')) return;
+
+        const myName = nameInput.value.trim();
+        currentRoomId = idInput.value.trim();
         const isCreating = document.getElementById('selectedSetting').innerText.includes('Create');
-        const roomDoc = doc(db, 'rooms', AppState.currentRoomId);
+        const roomDoc = doc(db, 'rooms', currentRoomId);
 
-        addSpinnerToBtn(UI.enterCallBtn);
+        addSpinnerToBtn(enterCallBtn);
 
         if (isCreating) {
             await setDoc(roomDoc, { creator: myName, knock: null, knockStatus: 'idle', offer: null, answer: null, hasEnded: false, participants: 1 });
 
-            const roomUnsub = onSnapshot(roomDoc, (docSnap) => {
+            roomWaitingUnsub = onSnapshot(roomDoc, (docSnap) => {
                 const data = docSnap.data();
                 if (data?.knockStatus === 'pending' && data.knock) {
-                    UI.knockMessage.innerText = `${data.knock} wants to join.`;
-                    UI.knockPopup.classList.remove('removed');
+                    knockMessage.innerText = `${data.knock} wants to join.`;
+                    knockPopup.classList.remove('removed');
 
-                    UI.acceptKnockBtn.onclick = async () => {
+                    acceptKnockBtn.onclick = async () => {
                         await updateDoc(roomDoc, { knockStatus: 'accepted' });
-                        executeCallAsCreator(AppState.currentRoomId);
+                        startCallAsCreator(currentRoomId);
                     };
 
-                    UI.declineKnockBtn.onclick = async () => {
+                    declineKnockBtn.onclick = async () => {
                         await updateDoc(roomDoc, { knockStatus: 'rejected', knock: null });
-                        UI.knockPopup.classList.add('removed');
+                        knockPopup.classList.add('removed');
                     };
                 }
             });
-            AppState.unsubs.push(roomUnsub);
         } else {
             const docExists = await getDoc(roomDoc);
             if (!docExists.exists()) {
                 alert("Room does not exist.");
-                resetRoomUI();
+                resetRoomState();
                 return;
             }
 
             await updateDoc(roomDoc, { knock: myName, knockStatus: 'pending' });
 
-            const roomUnsub = onSnapshot(roomDoc, (docSnap) => {
+            roomWaitingUnsub = onSnapshot(roomDoc, (docSnap) => {
                 const data = docSnap.data();
                 if (data?.knockStatus === 'accepted') {
-                    clearFirebaseListeners();
-                    executeCallAsJoiner(AppState.currentRoomId);
+                    if (roomWaitingUnsub) { roomWaitingUnsub(); roomWaitingUnsub = null; }
+                    startCallAsJoiner(currentRoomId);
                 } else if (data?.knockStatus === 'rejected') {
-                    clearFirebaseListeners();
+                    if (roomWaitingUnsub) { roomWaitingUnsub(); roomWaitingUnsub = null; }
                     alert("Call declined by host.");
-                    UI.enterCallBtn.innerHTML = "Join Failed";
-                    setTimeout(() => resetRoomUI(), 2000);
+                    enterCallBtn.innerHTML = "Join Failed";
+                    setTimeout(() => resetRoomState(), 2000);
                 }
             });
-            AppState.unsubs.push(roomUnsub);
         }
     });
 
-    UI.videoToggles.forEach(btn => {
+    document.querySelectorAll('.videoEnabledToggle').forEach(btn => {
         btn.addEventListener('click', async () => {
-            if (await requestPermissions('camera')) {
-                MediaState.videoEnabled = !MediaState.videoEnabled;
-                persistMediaStates();
-
-                if (MediaState.videoEnabled) {
-                    if (!MediaState.outgoingStream || !hasActiveVideoTrack(MediaState.outgoingStream)) {
-                        await acquireLocalStream();
-                    } else {
-                        MediaState.outgoingStream.getVideoTracks().forEach(t => t.enabled = true);
-                    }
-                } else {
-                    if (MediaState.outgoingStream) {
-                        MediaState.outgoingStream.getVideoTracks().forEach(t => t.stop());
-                    }
-                }
-                updateOutgoingPreviews();
-                syncMediaUI();
+            if (await ensurePermission('camera')) {
+                videoEnabled = !videoEnabled;
+                syncMediaToggles();
+                updateAllOutgoingVideoPreviews();
             }
         });
     });
 
-    UI.audioToggles.forEach(btn => {
+    document.querySelectorAll('.audioEnabledToggle').forEach(btn => {
         btn.addEventListener('click', async () => {
-            if (await requestPermissions('audio')) {
-                MediaState.audioEnabled = !MediaState.audioEnabled;
-                persistMediaStates();
-
-                if (MediaState.audioEnabled) {
-                    const hasLiveAudio = MediaState.outgoingStream &&
-                        MediaState.outgoingStream.getAudioTracks().some(t => t.readyState === 'live');
-
-                    if (!hasLiveAudio) {
-                        await acquireLocalStream();
-                    } else {
-                        MediaState.outgoingStream.getAudioTracks().forEach(t => t.enabled = true);
-                    }
-                } else {
-                    if (MediaState.outgoingStream) {
-                        MediaState.outgoingStream.getAudioTracks().forEach(t => t.stop());
-                    }
+            if (await ensurePermission('audio')) {
+                audioEnabled = !audioEnabled;
+                if (outgoingVideoStream) {
+                    outgoingVideoStream.getAudioTracks().forEach(t => t.enabled = audioEnabled);
                 }
-                syncMediaUI();
+                syncMediaToggles();
             }
         });
     });
 
-    UI.cameraRotates.forEach(btn => {
-        btn.addEventListener('click', cycleCamera);
+    document.querySelectorAll('.cameraRotate').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            videoInputDevices = await getVideoInputDevices();
+            if (videoInputDevices.length === 0) return;
+            currentVideoDeviceIndex = (currentVideoDeviceIndex + 1) % videoInputDevices.length;
+            isFrontCamera = isCurrentCameraFront(videoInputDevices, currentVideoDeviceIndex);
+            if (videoEnabled) {
+                await switchToNextCamera();
+            }
+        });
     });
 
-    UI.endCallBtn.addEventListener('click', teardownCall);
+    endCallBtn.addEventListener('click', async () => {
+        await leaveCallAndReturnToWaitingRoom();
+    });
+
+    syncMediaToggles();
+    updateButtons();
 
     if (UI.fullscreenBtn) {
         UI.fullscreenBtn.addEventListener('click', async () => {
@@ -539,8 +469,4 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.warn("Fullscreen toggle failed", e);
             }
         });
-    }
-
-    await initMedia();
-    updateFormValidation();
-});
+    });
