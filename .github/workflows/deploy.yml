@@ -1,0 +1,46 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Inject API Key into JavaScript
+        env:
+          FIREBASE_API_KEY: ${{ secrets.FIREBASE_API_KEY }}
+        run: |
+          if [ -z "$FIREBASE_API_KEY" ]; then
+            echo "Error: FIREBASE_API_KEY secret is empty or not set."
+            exit 1
+          fi
+          if ! grep -q "FIREBASE_API_KEY_PLACEHOLDER" index.js; then
+            echo "Error: FIREBASE_API_KEY_PLACEHOLDER not found in index.js."
+            exit 1
+          fi
+          sed -i 's|FIREBASE_API_KEY_PLACEHOLDER|'"$FIREBASE_API_KEY"'|g' index.js
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "."
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

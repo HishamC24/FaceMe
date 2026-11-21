@@ -4,7 +4,8 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebas
 import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
 const firebaseConfig = {
-    apiKey: "AIzaSyCp_npZTuLNtrIw4BxV_VuuRkO98Fg-bsM",
+    // apiKey: "AIzaSyCp_npZTuLNtrIw4BxV_VuuRkO98Fg-bsM",
+    apiKey: "FIREBASE_API_KEY_PLACEHOLDER",
     authDomain: "face2face-78436.firebaseapp.com",
     projectId: "face2face-78436",
     storageBucket: "face2face-78436.firebasestorage.app",
