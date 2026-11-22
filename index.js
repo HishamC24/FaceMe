@@ -62,18 +62,17 @@ let nameSaved = false;
 let videoEnabled = true;
 let audioEnabled = true;
 let currentRoomId = null;
-let callSessionId = 0;
 
 let callUnsub = null;
 let waitingUnsub = null;
-let candidatesUnsub = null;
+let candidateUnsubs = [];
 let iceQueue = [];
-let settingRemoteDesc = false;
+let settingRemote = false;
 
 function detectFrontCamera(devices, idx) {
-    const device = devices?.[idx];
-    if (!device) return idx === 0;
-    const label = (device.label || "").toLowerCase();
+    const dev = devices?.[idx];
+    if (!dev) return idx === 0;
+    const label = (dev.label || "").toLowerCase();
     if (label.includes("front") || label.includes("user") || label.includes("selfie")) return true;
     if (label.includes("back") || label.includes("environment") || label.includes("rear")) return false;
     return idx === 0;
@@ -84,47 +83,39 @@ function hasActiveVideo(stream) {
     return stream.getVideoTracks().some(t => t.enabled && t.readyState !== "ended");
 }
 
-function bindVideoElement(videoEl, stream, shouldShow, mirror = false) {
+function bindLocalVideo(videoEl, stream, show, mirror) {
     if (!videoEl) return;
-    const show = Boolean(shouldShow && stream && hasActiveVideo(stream));
-
-    if (!show) {
+    if (!show || !stream || !hasActiveVideo(stream)) {
         videoEl.srcObject = null;
-        videoEl.classList.add("video-hidden");
         videoEl.style.transform = "";
         return;
     }
-
     if (videoEl.srcObject !== stream) {
         videoEl.srcObject = stream;
     }
-    videoEl.classList.remove("video-hidden");
     videoEl.style.transform = mirror ? "scaleX(-1)" : "";
     videoEl.play().catch(() => { });
 }
 
-function refreshOutgoingPreviews() {
+function refreshLocalPreviews() {
     document.querySelectorAll("video.outgoingVideo").forEach(vid => {
-        bindVideoElement(vid, outgoingStream, videoEnabled, isFrontCamera);
+        bindLocalVideo(vid, outgoingStream, videoEnabled, isFrontCamera);
     });
 }
 
-function refreshIncomingPreview() {
-    if (!els.incomingVideo) return;
-    if (remoteStream && remoteStream.getTracks().length > 0) {
-        if (els.incomingVideo.srcObject !== remoteStream) {
-            els.incomingVideo.srcObject = remoteStream;
-        }
-        els.incomingVideo.classList.remove("video-hidden");
-        els.incomingVideo.muted = false;
-        els.incomingVideo.volume = 1;
-        els.incomingVideo.play().catch(() => { });
-    } else {
-        els.incomingVideo.srcObject = null;
+function refreshRemoteVideo() {
+    if (!els.incomingVideo || !remoteStream) return;
+    if (els.incomingVideo.srcObject !== remoteStream) {
+        els.incomingVideo.srcObject = remoteStream;
     }
+    els.incomingVideo.muted = false;
+    els.incomingVideo.volume = 1;
+    els.incomingVideo.play().catch(err => {
+        console.warn("Remote video autoplay/play warning:", err);
+    });
 }
 
-function syncMediaState() {
+function syncMedia() {
     document.querySelectorAll(".videoEnabledToggle").forEach(btn => {
         btn.querySelector("#videoEnabled")?.classList.toggle("removed", !videoEnabled);
         btn.querySelector("#videoDisabled")?.classList.toggle("removed", videoEnabled);
@@ -136,41 +127,37 @@ function syncMediaState() {
     });
 
     if (outgoingStream) {
-        outgoingStream.getVideoTracks().forEach(track => {
-            track.enabled = videoEnabled;
-        });
-        outgoingStream.getAudioTracks().forEach(track => {
-            track.enabled = audioEnabled;
-        });
+        outgoingStream.getVideoTracks().forEach(t => (t.enabled = videoEnabled));
+        outgoingStream.getAudioTracks().forEach(t => (t.enabled = audioEnabled));
     }
 
-    refreshOutgoingPreviews();
-    refreshIncomingPreview();
+    refreshLocalPreviews();
+    refreshRemoteVideo();
 }
 
-function updateFormState() {
+function updateButtons() {
     const hasName = Boolean(els.nameInput?.value.trim().length);
-    const hasRoom = Boolean(els.idInput?.value.trim().length);
+    const hasId = Boolean(els.idInput?.value.trim().length);
 
     if (els.saveNameBtn) {
         els.saveNameBtn.classList.toggle("disabled", !hasName);
         els.saveNameBtn.disabled = !hasName;
     }
 
-    const canEnter = nameSaved && hasName && hasRoom;
+    const canEnter = nameSaved && hasName && hasId;
     if (els.enterCallBtn) {
         els.enterCallBtn.classList.toggle("disabled", !canEnter);
         els.enterCallBtn.disabled = !canEnter;
     }
 }
 
-function setButtonLoading(btn, loading) {
-    if (!btn) return;
-    if (!loading) {
-        btn.innerHTML = enterCallOriginalSVG;
+function setSpinner(active) {
+    if (!els.enterCallBtn) return;
+    if (!active) {
+        els.enterCallBtn.innerHTML = enterCallOriginalSVG;
         return;
     }
-    btn.innerHTML = spinnerSVG;
+    els.enterCallBtn.innerHTML = spinnerSVG;
     if (!document.getElementById("waiting-spinner-style")) {
         const style = document.createElement("style");
         style.id = "waiting-spinner-style";
@@ -179,29 +166,30 @@ function setButtonLoading(btn, loading) {
     }
 }
 
-function cleanupRoomListeners() {
+function clearCandidateUnsubs() {
+    candidateUnsubs.forEach(fn => fn());
+    candidateUnsubs = [];
+}
+
+function resetLobbyState() {
     if (waitingUnsub) {
         waitingUnsub();
         waitingUnsub = null;
     }
-    if (candidatesUnsub) {
-        candidatesUnsub();
-        candidatesUnsub = null;
-    }
     iceQueue = [];
-    settingRemoteDesc = false;
-    setButtonLoading(els.enterCallBtn, false);
+    settingRemote = false;
+    setSpinner(false);
     els.knockPopup?.classList.add("removed");
 }
 
-async function clearSubcollection(parentDocRef, subcollectionName) {
+async function wipeSubcollection(docRef, name) {
     try {
-        const snap = await getDocs(collection(parentDocRef, subcollectionName));
+        const snap = await getDocs(collection(docRef, name));
         await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
     } catch (_) { }
 }
 
-async function initMediaDevices() {
+async function initCameraAndMic() {
     if (!navigator.mediaDevices?.getUserMedia) return;
     try {
         try {
@@ -211,114 +199,101 @@ async function initMediaDevices() {
         }
 
         if (navigator.mediaDevices.enumerateDevices) {
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            videoDevices = devices.filter(d => d.kind === "videoinput" && d.deviceId);
-            const activeTrack = outgoingStream?.getVideoTracks()?.[0];
-            const activeSettings = activeTrack?.getSettings?.();
-            const matchedIndex = activeSettings?.deviceId
-                ? videoDevices.findIndex(d => d.deviceId === activeSettings.deviceId)
-                : -1;
-            cameraIndex = matchedIndex >= 0 ? matchedIndex : 0;
+            const list = await navigator.mediaDevices.enumerateDevices();
+            videoDevices = list.filter(d => d.kind === "videoinput" && d.deviceId);
+            const trackId = outgoingStream?.getVideoTracks()?.[0]?.getSettings?.()?.deviceId;
+            const foundIdx = trackId ? videoDevices.findIndex(d => d.deviceId === trackId) : -1;
+            cameraIndex = foundIdx >= 0 ? foundIdx : 0;
             isFrontCamera = detectFrontCamera(videoDevices, cameraIndex);
         }
 
-        syncMediaState();
+        syncMedia();
     } catch (err) {
-        console.warn("Initial camera/mic access unavailable:", err);
-        syncMediaState();
+        console.warn("Camera/mic init failed:", err);
+        syncMedia();
     }
 }
 
-async function rotateCamera() {
+async function switchCamera() {
     if (!navigator.mediaDevices?.enumerateDevices || !navigator.mediaDevices?.getUserMedia) return;
-    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput" && d.deviceId);
-    videoDevices = devices;
+    const list = await navigator.mediaDevices.enumerateDevices();
+    videoDevices = list.filter(d => d.kind === "videoinput" && d.deviceId);
     if (videoDevices.length <= 1) return;
 
-    const prevIndex = cameraIndex;
+    const prevIdx = cameraIndex;
     const prevStream = outgoingStream;
     cameraIndex = (cameraIndex + 1) % videoDevices.length;
-    const nextDevice = videoDevices[cameraIndex];
+    const nextDev = videoDevices[cameraIndex];
 
     try {
-        if (prevStream) {
-            prevStream.getTracks().forEach(t => t.stop());
-        }
+        if (prevStream) prevStream.getTracks().forEach(t => t.stop());
 
         const nextStream = await navigator.mediaDevices.getUserMedia({
-            video: { deviceId: { exact: nextDevice.deviceId } },
+            video: { deviceId: { exact: nextDev.deviceId } },
             audio: audioEnabled
         });
 
         outgoingStream = nextStream;
         isFrontCamera = detectFrontCamera(videoDevices, cameraIndex);
 
-        const newVideoTrack = nextStream.getVideoTracks()[0] || null;
-        const newAudioTrack = nextStream.getAudioTracks()[0] || null;
-
         if (pc) {
-            const videoSender = pc.getSenders().find(s => s.track?.kind === "video");
-            if (videoSender && newVideoTrack) {
-                await videoSender.replaceTrack(newVideoTrack);
-            }
-            const audioSender = pc.getSenders().find(s => s.track?.kind === "audio");
-            if (audioSender && newAudioTrack) {
-                await audioSender.replaceTrack(newAudioTrack);
-            }
+            const vTrack = nextStream.getVideoTracks()[0] || null;
+            const aTrack = nextStream.getAudioTracks()[0] || null;
+            const vSender = pc.getSenders().find(s => s.track?.kind === "video");
+            const aSender = pc.getSenders().find(s => s.track?.kind === "audio");
+            if (vSender && vTrack) await vSender.replaceTrack(vTrack);
+            if (aSender && aTrack) await aSender.replaceTrack(aTrack);
         }
 
-        syncMediaState();
+        syncMedia();
     } catch (err) {
         console.error("Camera switch failed:", err);
-        cameraIndex = prevIndex;
+        cameraIndex = prevIdx;
         try {
             outgoingStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: audioEnabled });
-            isFrontCamera = detectFrontCamera(videoDevices, prevIndex);
-            syncMediaState();
+            isFrontCamera = detectFrontCamera(videoDevices, prevIdx);
+            syncMedia();
         } catch (_) { }
     }
 }
 
-async function setRemoteDescOnce(descInit) {
-    if (!pc || !descInit?.type || !descInit?.sdp) return;
-    if (pc.remoteDescription || settingRemoteDesc) return;
-
-    settingRemoteDesc = true;
+async function applyRemoteSdp(desc) {
+    if (!pc || !desc?.type || !desc?.sdp) return;
+    if (pc.remoteDescription || settingRemote) return;
+    settingRemote = true;
     try {
-        await pc.setRemoteDescription(new RTCSessionDescription(descInit));
+        await pc.setRemoteDescription(new RTCSessionDescription(desc));
         while (iceQueue.length > 0) {
-            const cand = iceQueue.shift();
+            const c = iceQueue.shift();
             try {
-                await pc.addIceCandidate(new RTCIceCandidate(cand));
-            } catch (err) {
-                console.warn("Buffered ICE candidate error:", err);
-            }
+                await pc.addIceCandidate(new RTCIceCandidate(c));
+            } catch (_) { }
         }
     } finally {
-        settingRemoteDesc = false;
+        settingRemote = false;
     }
 }
 
-async function addRemoteCandidate(candData) {
-    if (!pc || !candData) return;
-    if (!pc.remoteDescription || settingRemoteDesc) {
-        iceQueue.push(candData);
+async function addRemoteIce(cand) {
+    if (!pc || !cand) return;
+    if (!pc.remoteDescription || settingRemote) {
+        iceQueue.push(cand);
         return;
     }
     try {
-        await pc.addIceCandidate(new RTCIceCandidate(candData));
-    } catch (err) {
-        console.warn("ICE candidate error:", err);
-    }
+        await pc.addIceCandidate(new RTCIceCandidate(cand));
+    } catch (_) { }
 }
 
-function createPeerConnection() {
+function buildPeerConnection(roomRef, localSubcol, remoteSubcol) {
     if (pc && pc.signalingState !== "closed") {
         pc.close();
     }
+    clearCandidateUnsubs();
     iceQueue = [];
-    settingRemoteDesc = false;
+    settingRemote = false;
     remoteStream = new MediaStream();
+
     pc = new RTCPeerConnection(rtcConfig);
 
     if (outgoingStream) {
@@ -328,106 +303,90 @@ function createPeerConnection() {
     }
 
     pc.ontrack = event => {
-        const incomingTracks = event.streams?.[0]?.getTracks() || (event.track ? [event.track] : []);
-        incomingTracks.forEach(track => {
-            if (!remoteStream.getTracks().some(existing => existing.id === track.id)) {
+        console.log("Remote track received:", event.track?.kind);
+        const tracks = event.streams?.[0]?.getTracks() || (event.track ? [event.track] : []);
+        tracks.forEach(track => {
+            if (!remoteStream.getTracks().some(t => t.id === track.id)) {
                 remoteStream.addTrack(track);
             }
-            track.onunmute = () => refreshIncomingPreview();
+            track.onunmute = () => refreshRemoteVideo();
         });
-        if (els.incomingVideo) {
-            els.incomingVideo.srcObject = null;
-            els.incomingVideo.srcObject = remoteStream;
-        }
-        refreshIncomingPreview();
+        refreshRemoteVideo();
     };
 
-    pc.onconnectionstatechange = () => {
-        if (pc && ["failed", "closed"].includes(pc.connectionState)) {
-            leaveCall();
+    pc.onicecandidate = event => {
+        if (event.candidate) {
+            addDoc(collection(roomRef, localSubcol), event.candidate.toJSON()).catch(() => { });
         }
     };
+
+    pc.oniceconnectionstatechange = () => {
+        console.log("ICE connection state:", pc?.iceConnectionState);
+    };
+
+    const unsubRemoteCand = onSnapshot(collection(roomRef, remoteSubcol), snap => {
+        snap.docChanges().forEach(async change => {
+            if (change.type === "added") {
+                await addRemoteIce(change.doc.data());
+            }
+        });
+    });
+    candidateUnsubs.push(unsubRemoteCand);
 }
 
-function enterCallView() {
+function showInCallUI() {
     els.waitingRoom?.classList.add("removed");
     els.inCall?.classList.remove("removed");
     els.knockPopup?.classList.add("removed");
-    syncMediaState();
+    syncMedia();
 }
 
-async function startCreatorCall(roomId, sessionId) {
-    createPeerConnection();
+async function runCreatorCall(roomId) {
     const roomRef = doc(db, "rooms", roomId);
-
-    await clearSubcollection(roomRef, "offerCandidates");
-    await clearSubcollection(roomRef, "answerCandidates");
-
-    pc.onicecandidate = event => {
-        if (event.candidate && callSessionId === sessionId) {
-            addDoc(collection(roomRef, "offerCandidates"), event.candidate.toJSON()).catch(() => { });
-        }
-    };
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+    await wipeSubcollection(roomRef, "offerCandidates");
+    await wipeSubcollection(roomRef, "answerCandidates");
 
     await updateDoc(roomRef, {
-        offer: { type: offer.type, sdp: offer.sdp },
+        offer: null,
         answer: null,
-        sessionId,
         hasEnded: false,
         participants: 2
     });
 
+    buildPeerConnection(roomRef, "offerCandidates", "answerCandidates");
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await updateDoc(roomRef, {
+        offer: { type: offer.type, sdp: offer.sdp }
+    });
+
     if (callUnsub) callUnsub();
     callUnsub = onSnapshot(roomRef, async snap => {
-        if (callSessionId !== sessionId) return;
         const data = snap.data();
         if (!data) return;
-        if (data.sessionId === sessionId && data.answer?.type && data.answer?.sdp && !pc?.currentRemoteDescription) {
-            await setRemoteDescOnce(data.answer);
+        if (data.answer?.type && data.answer?.sdp && !pc?.currentRemoteDescription) {
+            await applyRemoteSdp(data.answer);
         }
         if (data.hasEnded) {
-            await leaveCall();
+            await endCall();
         }
     });
 
-    if (candidatesUnsub) candidatesUnsub();
-    candidatesUnsub = onSnapshot(collection(roomRef, "answerCandidates"), snap => {
-        if (callSessionId !== sessionId) return;
-        snap.docChanges().forEach(async change => {
-            if (change.type === "added") {
-                await addRemoteCandidate(change.doc.data());
-            }
-        });
-    });
-
-    enterCallView();
+    showInCallUI();
 }
 
-async function startJoinerCall(roomId) {
-    createPeerConnection();
+async function runJoinerCall(roomId) {
     const roomRef = doc(db, "rooms", roomId);
-    let answeredSession = null;
+    buildPeerConnection(roomRef, "answerCandidates", "offerCandidates");
 
-    pc.onicecandidate = event => {
-        if (event.candidate) {
-            addDoc(collection(roomRef, "answerCandidates"), event.candidate.toJSON()).catch(() => { });
-        }
-    };
-
-    const tryAnswerOffer = async data => {
-        if (!data?.offer?.type || !data?.offer?.sdp) return;
-        const activeSession = data.sessionId ?? 1;
-        if (answeredSession === activeSession) return;
-        answeredSession = activeSession;
-        callSessionId = activeSession;
-
-        await setRemoteDescOnce(data.offer);
+    let answered = false;
+    const handleOffer = async data => {
+        if (answered || !data?.offer?.type || !data?.offer?.sdp) return;
+        answered = true;
+        await applyRemoteSdp(data.offer);
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-
         await updateDoc(roomRef, {
             answer: { type: answer.type, sdp: answer.sdp },
             hasEnded: false,
@@ -439,38 +398,26 @@ async function startJoinerCall(roomId) {
     callUnsub = onSnapshot(roomRef, async snap => {
         const data = snap.data();
         if (!data) return;
-        if (data.offer?.type && data.offer?.sdp) {
-            await tryAnswerOffer(data);
-        }
+        await handleOffer(data);
         if (data.hasEnded) {
-            await leaveCall();
+            await endCall();
         }
     });
 
-    const initialSnap = await getDoc(roomRef);
-    if (initialSnap.exists()) {
-        await tryAnswerOffer(initialSnap.data());
+    const snap = await getDoc(roomRef);
+    if (snap.exists()) {
+        await handleOffer(snap.data());
     }
 
-    if (candidatesUnsub) candidatesUnsub();
-    candidatesUnsub = onSnapshot(collection(roomRef, "offerCandidates"), snap => {
-        snap.docChanges().forEach(async change => {
-            if (change.type === "added") {
-                await addRemoteCandidate(change.doc.data());
-            }
-        });
-    });
-
-    enterCallView();
+    showInCallUI();
 }
 
-async function leaveCall() {
-    callSessionId += 1;
-
+async function endCall() {
     if (callUnsub) {
         callUnsub();
         callUnsub = null;
     }
+    clearCandidateUnsubs();
 
     if (currentRoomId) {
         try {
@@ -486,41 +433,40 @@ async function leaveCall() {
     pc = null;
 
     if (remoteStream) {
-        remoteStream.getTracks().forEach(track => track.stop());
+        remoteStream.getTracks().forEach(t => t.stop());
         remoteStream = null;
     }
-
     if (els.incomingVideo) {
         els.incomingVideo.srcObject = null;
     }
 
     els.inCall?.classList.add("removed");
     els.waitingRoom?.classList.remove("removed");
-    cleanupRoomListeners();
-    refreshOutgoingPreviews();
+    resetLobbyState();
+    refreshLocalPreviews();
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-    els.nameInput?.addEventListener("input", updateFormState);
-    els.idInput?.addEventListener("input", updateFormState);
+    els.nameInput?.addEventListener("input", updateButtons);
+    els.idInput?.addEventListener("input", updateButtons);
 
     els.saveNameBtn?.addEventListener("click", () => {
         if (!els.saveNameBtn.classList.contains("disabled")) {
             nameSaved = true;
-            updateFormState();
+            updateButtons();
         }
     });
 
-    els.roomSetting?.querySelectorAll("p").forEach(option => {
-        option.addEventListener("click", () => {
-            if (option.id === "selectedSetting") return;
+    els.roomSetting?.querySelectorAll("p").forEach(opt => {
+        opt.addEventListener("click", () => {
+            if (opt.id === "selectedSetting") return;
             els.roomSetting.querySelectorAll("p").forEach(p => (p.id = ""));
-            option.id = "selectedSetting";
-            cleanupRoomListeners();
+            opt.id = "selectedSetting";
+            resetLobbyState();
         });
     });
 
-    await initMediaDevices();
+    await initCameraAndMic();
 
     els.enterCallBtn?.addEventListener("click", async () => {
         if (els.enterCallBtn.classList.contains("disabled")) return;
@@ -530,20 +476,16 @@ document.addEventListener("DOMContentLoaded", async () => {
         const isCreating = document.getElementById("selectedSetting")?.textContent.includes("Create");
         const roomRef = doc(db, "rooms", currentRoomId);
 
-        cleanupRoomListeners();
-        setButtonLoading(els.enterCallBtn, true);
+        resetLobbyState();
+        setSpinner(true);
 
         if (isCreating) {
-            const nextSession = Date.now();
-            callSessionId = nextSession;
-
             await setDoc(roomRef, {
                 creator: myName,
                 knock: null,
                 knockStatus: "idle",
                 offer: null,
                 answer: null,
-                sessionId: nextSession,
                 hasEnded: false,
                 participants: 1
             });
@@ -563,10 +505,8 @@ document.addEventListener("DOMContentLoaded", async () => {
                                 waitingUnsub = null;
                             }
                             els.knockPopup?.classList.add("removed");
-                            const activeSession = Date.now();
-                            callSessionId = activeSession;
-                            await updateDoc(roomRef, { knockStatus: "accepted", sessionId: activeSession });
-                            await startCreatorCall(currentRoomId, activeSession);
+                            await updateDoc(roomRef, { knockStatus: "accepted" });
+                            await runCreatorCall(currentRoomId);
                         };
                     }
 
@@ -582,7 +522,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             const snap = await getDoc(roomRef);
             if (!snap.exists()) {
                 alert("Room does not exist.");
-                cleanupRoomListeners();
+                resetLobbyState();
                 return;
             }
 
@@ -597,7 +537,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                         waitingUnsub();
                         waitingUnsub = null;
                     }
-                    await startJoinerCall(currentRoomId);
+                    await runJoinerCall(currentRoomId);
                 } else if (data.knockStatus === "rejected") {
                     if (waitingUnsub) {
                         waitingUnsub();
@@ -605,7 +545,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                     }
                     alert("Call declined by host.");
                     if (els.enterCallBtn) els.enterCallBtn.textContent = "Join Failed";
-                    setTimeout(() => cleanupRoomListeners(), 2000);
+                    setTimeout(() => resetLobbyState(), 2000);
                 }
             });
         }
@@ -614,22 +554,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     document.querySelectorAll(".videoEnabledToggle").forEach(btn => {
         btn.addEventListener("click", () => {
             videoEnabled = !videoEnabled;
-            syncMediaState();
+            syncMedia();
         });
     });
 
     document.querySelectorAll(".audioEnabledToggle").forEach(btn => {
         btn.addEventListener("click", () => {
             audioEnabled = !audioEnabled;
-            syncMediaState();
+            syncMedia();
         });
     });
 
     document.querySelectorAll(".cameraRotate").forEach(btn => {
-        btn.addEventListener("click", rotateCamera);
+        btn.addEventListener("click", switchCamera);
     });
 
-    els.endCallBtn?.addEventListener("click", leaveCall);
+    els.endCallBtn?.addEventListener("click", endCall);
 
     els.fullscreenBtn?.addEventListener("click", async () => {
         try {
@@ -640,10 +580,10 @@ document.addEventListener("DOMContentLoaded", async () => {
                 await (document.exitFullscreen?.() || document.webkitExitFullscreen?.());
             }
         } catch (err) {
-            console.warn("Fullscreen toggle failed:", err);
+            console.warn("Fullscreen failed:", err);
         }
     });
 
-    syncMediaState();
-    updateFormState();
+    syncMedia();
+    updateButtons();
 });
