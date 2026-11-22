@@ -1,5 +1,16 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
-import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+import {
+    getFirestore,
+    doc,
+    setDoc,
+    getDoc,
+    updateDoc,
+    collection,
+    addDoc,
+    getDocs,
+    deleteDoc,
+    onSnapshot
+} from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
 const firebaseConfig = {
     // apiKey: "AIzaSyCp_npZTuLNtrIw4BxV_VuuRkO98Fg-bsM",
@@ -14,551 +25,624 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-const servers = {
-    iceServers: [{ urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] }]
+const rtcConfig = {
+    iceServers: [
+        { urls: ["stun:stun1.l.google.com:19302", "stun:stun2.l.google.com:19302"] }
+    ]
 };
-
-let pc = null;
-let remoteStream = new MediaStream();
-let outgoingVideoStream = null;
-let videoInputDevices = [];
-let currentVideoDeviceIndex = 0;
-let isFrontCamera = false;
-
-let saveNameConfirmed = false;
-let videoEnabled = true;
-let audioEnabled = true;
-let currentRoomId = null;
-
-let callUnsub = null;
-let roomWaitingUnsub = null;
-let candidatesUnsub = null;
-let pendingIceCandidates = [];
-let isSettingRemoteDescription = false;
 
 const enterCallOriginalSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M9 8v-2a2 2 0 0 1 2 -2h7a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-7a2 2 0 0 1 -2 -2v-2" /><path d="M3 12h13l-3 -3" /><path d="M13 15l3 -3" /></svg>`;
 const spinnerSVG = `<svg class="waiting-spinner" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M12 6l0 -3" /><path d="M16.25 7.75l2.15 -2.15" /><path d="M18 12l3 0" /><path d="M16.25 16.25l2.15 2.15" /><path d="M12 18l0 3" /><path d="M7.75 16.25l-2.15 2.15" /><path d="M6 12l-3 0" /><path d="M7.75 7.75l-2.15 -2.15" /></svg>`;
 
-const nameInput = document.getElementById('nameInput');
-const idInput = document.getElementById('idInput');
-const saveNameBtn = document.getElementById('saveName');
-const enterCallBtn = document.getElementById('enterCall');
-const waitingRoom = document.getElementById('waitingRoom');
-const inCall = document.getElementById('inCall');
-const incomingVideo = document.getElementById('incomingVideo');
-const endCallBtn = document.getElementById('endCall');
-const roomSetting = document.getElementById('roomSetting');
-const fullscreenBtn = document.getElementById('fullscreen');
+const els = {
+    nameInput: document.getElementById("nameInput"),
+    idInput: document.getElementById("idInput"),
+    saveNameBtn: document.getElementById("saveName"),
+    enterCallBtn: document.getElementById("enterCall"),
+    waitingRoom: document.getElementById("waitingRoom"),
+    inCall: document.getElementById("inCall"),
+    incomingVideo: document.getElementById("incomingVideo"),
+    endCallBtn: document.getElementById("endCall"),
+    roomSetting: document.getElementById("roomSetting"),
+    fullscreenBtn: document.getElementById("fullscreen"),
+    knockPopup: document.getElementById("knockPopup"),
+    knockMessage: document.getElementById("knockMessage"),
+    acceptKnockBtn: document.getElementById("acceptKnock"),
+    declineKnockBtn: document.getElementById("declineKnock")
+};
 
-const knockPopup = document.getElementById('knockPopup');
-const knockMessage = document.getElementById('knockMessage');
-const acceptKnockBtn = document.getElementById('acceptKnock');
-const declineKnockBtn = document.getElementById('declineKnock');
+let pc = null;
+let remoteStream = null;
+let outgoingStream = null;
+let videoDevices = [];
+let cameraIndex = 0;
+let isFrontCamera = false;
 
-function isCurrentCameraFront(devices, idx) {
-    if (!Array.isArray(devices)) return false;
-    if (idx < 0 || idx >= devices.length) return false;
-    const device = devices[idx];
-    if (device && typeof device.label === 'string') {
-        if (device.label.toLowerCase().includes('front')) return true;
-        if (device.label.toLowerCase().includes('user')) return true;
-        if (device.label.toLowerCase().includes('selfie')) return true;
-    }
-    if (idx === 0) return true;
-    return false;
+let nameSaved = false;
+let videoEnabled = true;
+let audioEnabled = true;
+let currentRoomId = null;
+let callSessionId = 0;
+
+let callUnsub = null;
+let waitingUnsub = null;
+let candidatesUnsub = null;
+let iceQueue = [];
+let settingRemoteDesc = false;
+
+function detectFrontCamera(devices, idx) {
+    const device = devices?.[idx];
+    if (!device) return idx === 0;
+    const label = (device.label || "").toLowerCase();
+    if (label.includes("front") || label.includes("user") || label.includes("selfie")) return true;
+    if (label.includes("back") || label.includes("environment") || label.includes("rear")) return false;
+    return idx === 0;
 }
 
-function setVideoOrHide(videoElem, stream, enabled, flipHorizontally = false) {
-    if (!videoElem) return;
-    if (!stream || !enabled || !hasEnabledVideoTrack(stream)) {
-        videoElem.srcObject = null;
-        videoElem.classList.add('video-hidden');
-        videoElem.style.transform = "";
-    } else {
-        if (videoElem.srcObject !== stream) videoElem.srcObject = stream;
-        videoElem.classList.remove('video-hidden');
-        if (flipHorizontally) {
-            videoElem.style.transform = "scaleX(-1)";
-        } else {
-            videoElem.style.transform = "";
-        }
-    }
-}
-
-function hasEnabledVideoTrack(stream) {
+function hasActiveVideo(stream) {
     if (!stream) return false;
-    const tracks = stream.getVideoTracks();
-    return tracks.length > 0 && tracks.some(track => track.enabled);
+    return stream.getVideoTracks().some(t => t.enabled && t.readyState !== "ended");
 }
 
-function updateButtons() {
-    const hasName = nameInput.value.trim().length >= 1;
-    const hasId = idInput.value.trim().length >= 1;
+function bindVideoElement(videoEl, stream, shouldShow, mirror = false) {
+    if (!videoEl) return;
+    const show = Boolean(shouldShow && stream && hasActiveVideo(stream));
 
-    saveNameBtn.classList.toggle('disabled', !hasName);
-    saveNameBtn.disabled = !hasName;
+    if (!show) {
+        videoEl.srcObject = null;
+        videoEl.classList.add("video-hidden");
+        videoEl.style.transform = "";
+        return;
+    }
 
-    const canEnter = saveNameConfirmed && hasName && hasId;
-    enterCallBtn.classList.toggle('disabled', !canEnter);
-    enterCallBtn.disabled = !canEnter;
+    if (videoEl.srcObject !== stream) {
+        videoEl.srcObject = stream;
+    }
+    videoEl.classList.remove("video-hidden");
+    videoEl.style.transform = mirror ? "scaleX(-1)" : "";
+    videoEl.play().catch(() => { });
 }
 
-function resetRoomState() {
-    if (roomWaitingUnsub) {
-        roomWaitingUnsub();
-        roomWaitingUnsub = null;
+function refreshOutgoingPreviews() {
+    document.querySelectorAll("video.outgoingVideo").forEach(vid => {
+        bindVideoElement(vid, outgoingStream, videoEnabled, isFrontCamera);
+    });
+}
+
+function refreshIncomingPreview() {
+    if (!els.incomingVideo) return;
+    if (remoteStream && remoteStream.getTracks().length > 0) {
+        if (els.incomingVideo.srcObject !== remoteStream) {
+            els.incomingVideo.srcObject = remoteStream;
+        }
+        els.incomingVideo.classList.remove("video-hidden");
+        els.incomingVideo.muted = false;
+        els.incomingVideo.volume = 1;
+        els.incomingVideo.play().catch(() => { });
+    } else {
+        els.incomingVideo.srcObject = null;
+    }
+}
+
+function syncMediaState() {
+    document.querySelectorAll(".videoEnabledToggle").forEach(btn => {
+        btn.querySelector("#videoEnabled")?.classList.toggle("removed", !videoEnabled);
+        btn.querySelector("#videoDisabled")?.classList.toggle("removed", videoEnabled);
+    });
+
+    document.querySelectorAll(".audioEnabledToggle").forEach(btn => {
+        btn.querySelector("#audioEnabled")?.classList.toggle("removed", !audioEnabled);
+        btn.querySelector("#audioDisabled")?.classList.toggle("removed", audioEnabled);
+    });
+
+    if (outgoingStream) {
+        outgoingStream.getVideoTracks().forEach(track => {
+            track.enabled = videoEnabled;
+        });
+        outgoingStream.getAudioTracks().forEach(track => {
+            track.enabled = audioEnabled;
+        });
+    }
+
+    refreshOutgoingPreviews();
+    refreshIncomingPreview();
+}
+
+function updateFormState() {
+    const hasName = Boolean(els.nameInput?.value.trim().length);
+    const hasRoom = Boolean(els.idInput?.value.trim().length);
+
+    if (els.saveNameBtn) {
+        els.saveNameBtn.classList.toggle("disabled", !hasName);
+        els.saveNameBtn.disabled = !hasName;
+    }
+
+    const canEnter = nameSaved && hasName && hasRoom;
+    if (els.enterCallBtn) {
+        els.enterCallBtn.classList.toggle("disabled", !canEnter);
+        els.enterCallBtn.disabled = !canEnter;
+    }
+}
+
+function setButtonLoading(btn, loading) {
+    if (!btn) return;
+    if (!loading) {
+        btn.innerHTML = enterCallOriginalSVG;
+        return;
+    }
+    btn.innerHTML = spinnerSVG;
+    if (!document.getElementById("waiting-spinner-style")) {
+        const style = document.createElement("style");
+        style.id = "waiting-spinner-style";
+        style.textContent = `.waiting-spinner{animation:spinner-rotate 1s linear infinite}@keyframes spinner-rotate{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`;
+        document.head.appendChild(style);
+    }
+}
+
+function cleanupRoomListeners() {
+    if (waitingUnsub) {
+        waitingUnsub();
+        waitingUnsub = null;
     }
     if (candidatesUnsub) {
         candidatesUnsub();
         candidatesUnsub = null;
     }
-    pendingIceCandidates = [];
-    isSettingRemoteDescription = false;
-    enterCallBtn.innerHTML = enterCallOriginalSVG;
-    knockPopup.classList.add('removed');
+    iceQueue = [];
+    settingRemoteDesc = false;
+    setButtonLoading(els.enterCallBtn, false);
+    els.knockPopup?.classList.add("removed");
 }
 
-function addSpinnerToBtn(btn) {
-    btn.innerHTML = spinnerSVG;
-    if (!document.getElementById('waiting-spinner-style')) {
-        const css = document.createElement('style');
-        css.id = 'waiting-spinner-style';
-        css.innerHTML = `
-            .waiting-spinner { animation: spinner-rotate 1s linear infinite; }
-            @keyframes spinner-rotate { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
-        `;
-        document.head.appendChild(css);
+async function clearSubcollection(parentDocRef, subcollectionName) {
+    try {
+        const snap = await getDocs(collection(parentDocRef, subcollectionName));
+        await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+    } catch (_) { }
+}
+
+async function initMediaDevices() {
+    if (!navigator.mediaDevices?.enumerateDevices || !navigator.mediaDevices?.getUserMedia) return;
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        videoDevices = devices.filter(d => d.kind === "videoinput");
+        cameraIndex = 0;
+        isFrontCamera = detectFrontCamera(videoDevices, cameraIndex);
+
+        const selectedDevice = videoDevices[cameraIndex] || null;
+        outgoingStream = await navigator.mediaDevices.getUserMedia({
+            video: selectedDevice ? { deviceId: { exact: selectedDevice.deviceId } } : true,
+            audio: true
+        });
+
+        const refreshed = await navigator.mediaDevices.enumerateDevices();
+        const updatedVideos = refreshed.filter(d => d.kind === "videoinput");
+        if (updatedVideos.length > 0) {
+            videoDevices = updatedVideos;
+            isFrontCamera = detectFrontCamera(videoDevices, cameraIndex);
+        }
+
+        syncMediaState();
+    } catch (err) {
+        console.warn("Initial camera/mic access unavailable:", err);
+        syncMediaState();
     }
 }
 
-async function ensurePermission(type) {
-    try {
-        if (navigator.mediaDevices?.getUserMedia) {
-            const stream = await navigator.mediaDevices.getUserMedia(type === 'camera' ? { video: true } : { audio: true });
-            stream.getTracks().forEach(t => t.stop());
-            return true;
-        }
-    } catch (e) { }
-    return false;
-}
-
-async function getVideoInputDevices() {
-    if (!navigator.mediaDevices?.enumerateDevices) return [];
+async function rotateCamera() {
+    if (!navigator.mediaDevices?.enumerateDevices || !navigator.mediaDevices?.getUserMedia) return;
     const devices = await navigator.mediaDevices.enumerateDevices();
-    return devices.filter(device => device.kind === 'videoinput');
-}
+    videoDevices = devices.filter(d => d.kind === "videoinput");
+    if (videoDevices.length <= 1) return;
 
-function updateAllOutgoingVideoPreviews() {
-    const flip = isFrontCamera;
-    document.querySelectorAll('video.outgoingVideo').forEach(vid => {
-        setVideoOrHide(vid, outgoingVideoStream, videoEnabled, flip);
-    });
-}
-
-function syncMediaToggles() {
-    document.querySelectorAll('.videoEnabledToggle').forEach(btn => {
-        btn.querySelector('#videoEnabled')?.classList.toggle('removed', !videoEnabled);
-        btn.querySelector('#videoDisabled')?.classList.toggle('removed', videoEnabled);
-    });
-
-    document.querySelectorAll('.audioEnabledToggle').forEach(btn => {
-        btn.querySelector('#audioEnabled')?.classList.toggle('removed', !audioEnabled);
-        btn.querySelector('#audioDisabled')?.classList.toggle('removed', audioEnabled);
-    });
-
-    if (outgoingVideoStream) {
-        outgoingVideoStream.getVideoTracks().forEach(t => t.enabled = videoEnabled);
-        outgoingVideoStream.getAudioTracks().forEach(t => t.enabled = audioEnabled);
-    }
-
-    if (incomingVideo) {
-        setVideoOrHide(incomingVideo, remoteStream, true, false);
-        incomingVideo.muted = false;
-        incomingVideo.volume = 1;
-    }
-}
-
-async function switchToNextCamera() {
-    videoInputDevices = await getVideoInputDevices();
-    if (videoInputDevices.length <= 1) return;
-
-    const previousIndex = currentVideoDeviceIndex;
-    const previousStream = outgoingVideoStream;
-    currentVideoDeviceIndex = (currentVideoDeviceIndex + 1) % videoInputDevices.length;
-    const nextDevice = videoInputDevices[currentVideoDeviceIndex];
+    const prevIndex = cameraIndex;
+    const prevStream = outgoingStream;
+    cameraIndex = (cameraIndex + 1) % videoDevices.length;
+    const nextDevice = videoDevices[cameraIndex];
 
     try {
-        if (previousStream) {
-            previousStream.getTracks().forEach(track => track.stop());
+        if (prevStream) {
+            prevStream.getTracks().forEach(t => t.stop());
         }
 
-        const newStream = await navigator.mediaDevices.getUserMedia({
+        const nextStream = await navigator.mediaDevices.getUserMedia({
             video: { deviceId: { exact: nextDevice.deviceId } },
             audio: audioEnabled
         });
 
-        isFrontCamera = isCurrentCameraFront(videoInputDevices, currentVideoDeviceIndex);
-        newStream.getVideoTracks().forEach(t => t.enabled = videoEnabled);
-        newStream.getAudioTracks().forEach(t => t.enabled = audioEnabled);
+        outgoingStream = nextStream;
+        isFrontCamera = detectFrontCamera(videoDevices, cameraIndex);
 
-        const videoTrack = newStream.getVideoTracks()[0];
+        const newVideoTrack = nextStream.getVideoTracks()[0] || null;
+        const newAudioTrack = nextStream.getAudioTracks()[0] || null;
+
         if (pc) {
-            const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
-            if (sender && videoTrack) {
-                await sender.replaceTrack(videoTrack);
+            const videoSender = pc.getSenders().find(s => s.track?.kind === "video");
+            if (videoSender && newVideoTrack) {
+                await videoSender.replaceTrack(newVideoTrack);
+            }
+            const audioSender = pc.getSenders().find(s => s.track?.kind === "audio");
+            if (audioSender && newAudioTrack) {
+                await audioSender.replaceTrack(newAudioTrack);
             }
         }
 
-        outgoingVideoStream = newStream;
-        updateAllOutgoingVideoPreviews();
-        syncMediaToggles();
+        syncMediaState();
     } catch (err) {
-        console.error("Camera switch failed", err);
-        currentVideoDeviceIndex = previousIndex;
+        console.error("Camera switch failed:", err);
+        cameraIndex = prevIndex;
         try {
-            const fallbackDevice = videoInputDevices[previousIndex];
-            outgoingVideoStream = await navigator.mediaDevices.getUserMedia({
-                video: fallbackDevice ? { deviceId: { exact: fallbackDevice.deviceId } } : true,
+            const fallback = videoDevices[prevIndex];
+            outgoingStream = await navigator.mediaDevices.getUserMedia({
+                video: fallback ? { deviceId: { exact: fallback.deviceId } } : true,
                 audio: audioEnabled
             });
-            isFrontCamera = isCurrentCameraFront(videoInputDevices, previousIndex);
-            updateAllOutgoingVideoPreviews();
-            syncMediaToggles();
-        } catch (fallbackErr) {
-            console.warn("Could not restore previous camera", fallbackErr);
-        }
+            isFrontCamera = detectFrontCamera(videoDevices, prevIndex);
+            syncMediaState();
+        } catch (_) { }
     }
 }
 
-async function applyRemoteDescriptionSafely(descriptionInit) {
-    if (!pc || !descriptionInit?.type || !descriptionInit?.sdp) return;
-    if (pc.remoteDescription || isSettingRemoteDescription) return;
+async function setRemoteDescOnce(descInit) {
+    if (!pc || !descInit?.type || !descInit?.sdp) return;
+    if (pc.remoteDescription || settingRemoteDesc) return;
 
-    isSettingRemoteDescription = true;
+    settingRemoteDesc = true;
     try {
-        await pc.setRemoteDescription(new RTCSessionDescription(descriptionInit));
-        while (pendingIceCandidates.length > 0) {
-            const candidateData = pendingIceCandidates.shift();
+        await pc.setRemoteDescription(new RTCSessionDescription(descInit));
+        while (iceQueue.length > 0) {
+            const cand = iceQueue.shift();
             try {
-                await pc.addIceCandidate(new RTCIceCandidate(candidateData));
-            } catch (iceErr) {
-                console.warn("Buffered ICE candidate failed", iceErr);
+                await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch (err) {
+                console.warn("Buffered ICE candidate error:", err);
             }
         }
     } finally {
-        isSettingRemoteDescription = false;
+        settingRemoteDesc = false;
     }
 }
 
-async function handleRemoteIceCandidate(candidateData) {
-    if (!pc || !candidateData) return;
-    if (!pc.remoteDescription || isSettingRemoteDescription) {
-        pendingIceCandidates.push(candidateData);
+async function addRemoteCandidate(candData) {
+    if (!pc || !candData) return;
+    if (!pc.remoteDescription || settingRemoteDesc) {
+        iceQueue.push(candData);
         return;
     }
     try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+        await pc.addIceCandidate(new RTCIceCandidate(candData));
     } catch (err) {
-        console.warn("Failed to add ICE candidate", err);
+        console.warn("ICE candidate error:", err);
     }
 }
 
-function setupWebRTC() {
+function createPeerConnection() {
     if (pc && pc.signalingState !== "closed") {
         pc.close();
     }
-    pendingIceCandidates = [];
-    isSettingRemoteDescription = false;
-    pc = new RTCPeerConnection(servers);
+    iceQueue = [];
+    settingRemoteDesc = false;
     remoteStream = new MediaStream();
-    setVideoOrHide(incomingVideo, remoteStream, true, false);
-    if (outgoingVideoStream) {
-        outgoingVideoStream.getTracks().forEach(track => pc.addTrack(track, outgoingVideoStream));
+    pc = new RTCPeerConnection(rtcConfig);
+
+    if (outgoingStream) {
+        outgoingStream.getTracks().forEach(track => {
+            pc.addTrack(track, outgoingStream);
+        });
     }
+
     pc.ontrack = event => {
         if (event.streams && event.streams[0]) {
-            event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+            event.streams[0].getTracks().forEach(track => {
+                if (!remoteStream.getTracks().some(existing => existing.id === track.id)) {
+                    remoteStream.addTrack(track);
+                }
+            });
         } else if (event.track) {
-            remoteStream.addTrack(event.track);
+            if (!remoteStream.getTracks().some(existing => existing.id === event.track.id)) {
+                remoteStream.addTrack(event.track);
+            }
         }
-        syncMediaToggles();
+        refreshIncomingPreview();
     };
+
     pc.onconnectionstatechange = () => {
-        if (["disconnected", "failed", "closed"].includes(pc.connectionState)) {
-            leaveCallAndReturnToWaitingRoom();
+        if (pc && ["failed", "closed"].includes(pc.connectionState)) {
+            leaveCall();
         }
     };
 }
 
-async function startCallAsCreator(roomId) {
-    setupWebRTC();
-    const callDoc = doc(db, 'rooms', roomId);
+function enterCallView() {
+    els.waitingRoom?.classList.add("removed");
+    els.inCall?.classList.remove("removed");
+    els.knockPopup?.classList.add("removed");
+    syncMediaState();
+}
+
+async function startCreatorCall(roomId, sessionId) {
+    createPeerConnection();
+    const roomRef = doc(db, "rooms", roomId);
+
+    await clearSubcollection(roomRef, "offerCandidates");
+    await clearSubcollection(roomRef, "answerCandidates");
 
     pc.onicecandidate = event => {
-        if (event.candidate) addDoc(collection(callDoc, 'offerCandidates'), event.candidate.toJSON());
+        if (event.candidate && callSessionId === sessionId) {
+            addDoc(collection(roomRef, "offerCandidates"), event.candidate.toJSON()).catch(() => { });
+        }
     };
 
-    const offerDescription = await pc.createOffer();
-    await pc.setLocalDescription(offerDescription);
-    await updateDoc(callDoc, {
-        offer: { sdp: offerDescription.sdp, type: offerDescription.type },
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    await updateDoc(roomRef, {
+        offer: { type: offer.type, sdp: offer.sdp },
         answer: null,
+        sessionId,
         hasEnded: false,
         participants: 2
     });
 
     if (callUnsub) callUnsub();
-    callUnsub = onSnapshot(callDoc, async snapshot => {
-        const data = snapshot.data();
-        if (data?.answer?.type && data?.answer?.sdp && !pc.currentRemoteDescription) {
-            await applyRemoteDescriptionSafely(data.answer);
+    callUnsub = onSnapshot(roomRef, async snap => {
+        if (callSessionId !== sessionId) return;
+        const data = snap.data();
+        if (!data) return;
+        if (data.sessionId === sessionId && data.answer?.type && data.answer?.sdp && !pc?.currentRemoteDescription) {
+            await setRemoteDescOnce(data.answer);
         }
-        if (data?.hasEnded) leaveCallAndReturnToWaitingRoom();
+        if (data.hasEnded) {
+            await leaveCall();
+        }
     });
 
     if (candidatesUnsub) candidatesUnsub();
-    candidatesUnsub = onSnapshot(collection(callDoc, 'answerCandidates'), snapshot => {
-        snapshot.docChanges().forEach(async change => {
-            if (change.type === 'added') {
-                await handleRemoteIceCandidate(change.doc.data());
+    candidatesUnsub = onSnapshot(collection(roomRef, "answerCandidates"), snap => {
+        if (callSessionId !== sessionId) return;
+        snap.docChanges().forEach(async change => {
+            if (change.type === "added") {
+                await addRemoteCandidate(change.doc.data());
             }
         });
     });
 
-    transitionToInCall();
+    enterCallView();
 }
 
-async function startCallAsJoiner(roomId) {
-    setupWebRTC();
-    const callDoc = doc(db, 'rooms', roomId);
+async function startJoinerCall(roomId) {
+    createPeerConnection();
+    const roomRef = doc(db, "rooms", roomId);
+    let answeredSession = null;
 
     pc.onicecandidate = event => {
-        if (event.candidate) addDoc(collection(callDoc, 'answerCandidates'), event.candidate.toJSON());
+        if (event.candidate) {
+            addDoc(collection(roomRef, "answerCandidates"), event.candidate.toJSON()).catch(() => { });
+        }
     };
 
-    let answerCreated = false;
-    const createAndSendAnswer = async (offerData) => {
-        if (answerCreated || !offerData?.type || !offerData?.sdp) return;
-        answerCreated = true;
-        await applyRemoteDescriptionSafely(offerData);
-        const answerDescription = await pc.createAnswer();
-        await pc.setLocalDescription(answerDescription);
-        await updateDoc(callDoc, {
-            answer: { type: answerDescription.type, sdp: answerDescription.sdp },
+    const tryAnswerOffer = async data => {
+        if (!data?.offer?.type || !data?.offer?.sdp) return;
+        const activeSession = data.sessionId ?? 1;
+        if (answeredSession === activeSession) return;
+        answeredSession = activeSession;
+        callSessionId = activeSession;
+
+        await setRemoteDescOnce(data.offer);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        await updateDoc(roomRef, {
+            answer: { type: answer.type, sdp: answer.sdp },
             hasEnded: false,
             participants: 2
         });
     };
 
     if (callUnsub) callUnsub();
-    callUnsub = onSnapshot(callDoc, async snapshot => {
-        const data = snapshot.data();
+    callUnsub = onSnapshot(roomRef, async snap => {
+        const data = snap.data();
         if (!data) return;
-        if (data.offer?.type && data.offer?.sdp && !answerCreated) {
-            await createAndSendAnswer(data.offer);
+        if (data.offer?.type && data.offer?.sdp) {
+            await tryAnswerOffer(data);
         }
-        if (data.hasEnded) leaveCallAndReturnToWaitingRoom();
+        if (data.hasEnded) {
+            await leaveCall();
+        }
     });
 
-    const initialData = (await getDoc(callDoc)).data();
-    if (initialData?.offer?.type && initialData?.offer?.sdp) {
-        await createAndSendAnswer(initialData.offer);
+    const initialSnap = await getDoc(roomRef);
+    if (initialSnap.exists()) {
+        await tryAnswerOffer(initialSnap.data());
     }
 
     if (candidatesUnsub) candidatesUnsub();
-    candidatesUnsub = onSnapshot(collection(callDoc, 'offerCandidates'), snapshot => {
-        snapshot.docChanges().forEach(async change => {
-            if (change.type === 'added') {
-                await handleRemoteIceCandidate(change.doc.data());
+    candidatesUnsub = onSnapshot(collection(roomRef, "offerCandidates"), snap => {
+        snap.docChanges().forEach(async change => {
+            if (change.type === "added") {
+                await addRemoteCandidate(change.doc.data());
             }
         });
     });
 
-    transitionToInCall();
+    enterCallView();
 }
 
-function transitionToInCall() {
-    waitingRoom.classList.add('removed');
-    inCall.classList.remove('removed');
-    knockPopup.classList.add('removed');
-    syncMediaToggles();
-}
+async function leaveCall() {
+    callSessionId += 1;
 
-async function leaveCallAndReturnToWaitingRoom() {
-    if (callUnsub) { callUnsub(); callUnsub = null; }
-    if (candidatesUnsub) { candidatesUnsub(); candidatesUnsub = null; }
+    if (callUnsub) {
+        callUnsub();
+        callUnsub = null;
+    }
 
     if (currentRoomId) {
-        try { await updateDoc(doc(db, 'rooms', currentRoomId), { hasEnded: true, participants: 0 }); } catch (e) { }
+        try {
+            await updateDoc(doc(db, "rooms", currentRoomId), { hasEnded: true, participants: 0 });
+        } catch (_) { }
     }
 
     if (pc && pc.signalingState !== "closed") {
-        try { pc.close(); } catch (e) { }
+        try {
+            pc.close();
+        } catch (_) { }
     }
     pc = null;
 
-    try {
-        if (remoteStream) {
-            remoteStream.getTracks().forEach(track => track.stop());
-        }
-    } catch (e) { }
+    if (remoteStream) {
+        remoteStream.getTracks().forEach(track => track.stop());
+        remoteStream = null;
+    }
 
-    setVideoOrHide(incomingVideo, null, false, false);
+    if (els.incomingVideo) {
+        els.incomingVideo.srcObject = null;
+    }
 
-    inCall.classList.add('removed');
-    waitingRoom.classList.remove('removed');
-    resetRoomState();
+    els.inCall?.classList.add("removed");
+    els.waitingRoom?.classList.remove("removed");
+    cleanupRoomListeners();
+    refreshOutgoingPreviews();
 }
 
-async function determineInitialFrontCameraSetting() {
-    videoInputDevices = await getVideoInputDevices();
-    currentVideoDeviceIndex = 0;
-    isFrontCamera = isCurrentCameraFront(videoInputDevices, currentVideoDeviceIndex);
-}
+document.addEventListener("DOMContentLoaded", async () => {
+    els.nameInput?.addEventListener("input", updateFormState);
+    els.idInput?.addEventListener("input", updateFormState);
 
-document.addEventListener('DOMContentLoaded', async () => {
-    nameInput?.addEventListener('input', updateButtons);
-    idInput?.addEventListener('input', updateButtons);
-
-    saveNameBtn?.addEventListener('click', function () {
-        if (!this.classList.contains('disabled')) {
-            saveNameConfirmed = true;
-            updateButtons();
+    els.saveNameBtn?.addEventListener("click", () => {
+        if (!els.saveNameBtn.classList.contains("disabled")) {
+            nameSaved = true;
+            updateFormState();
         }
     });
 
-    if (roomSetting) {
-        const options = roomSetting.querySelectorAll('p');
-        options.forEach(option => {
-            option.addEventListener('click', () => {
-                if (option.id === 'selectedSetting') return;
-
-                options.forEach(opt => opt.id = '');
-                option.id = 'selectedSetting';
-                resetRoomState();
-            });
+    els.roomSetting?.querySelectorAll("p").forEach(option => {
+        option.addEventListener("click", () => {
+            if (option.id === "selectedSetting") return;
+            els.roomSetting.querySelectorAll("p").forEach(p => (p.id = ""));
+            option.id = "selectedSetting";
+            cleanupRoomListeners();
         });
-    }
+    });
 
-    await determineInitialFrontCameraSetting();
+    await initMediaDevices();
 
-    try {
-        const firstDevice = videoInputDevices.length > 0 ? videoInputDevices[0] : null;
-        outgoingVideoStream = await navigator.mediaDevices.getUserMedia({ video: firstDevice ? { deviceId: { exact: firstDevice.deviceId } } : true, audio: true });
-        updateAllOutgoingVideoPreviews();
-    } catch (e) {
-        console.warn("Initial camera access denied or unavailable.");
-        updateAllOutgoingVideoPreviews();
-        setVideoOrHide(incomingVideo, null, false, false);
-    }
+    els.enterCallBtn?.addEventListener("click", async () => {
+        if (els.enterCallBtn.classList.contains("disabled")) return;
 
-    setVideoOrHide(incomingVideo, remoteStream, true, false);
+        const myName = els.nameInput.value.trim();
+        currentRoomId = els.idInput.value.trim();
+        const isCreating = document.getElementById("selectedSetting")?.textContent.includes("Create");
+        const roomRef = doc(db, "rooms", currentRoomId);
 
-    enterCallBtn.addEventListener('click', async () => {
-        if (enterCallBtn.classList.contains('disabled')) return;
-
-        const myName = nameInput.value.trim();
-        currentRoomId = idInput.value.trim();
-        const isCreating = document.getElementById('selectedSetting').innerText.includes('Create');
-        const roomDoc = doc(db, 'rooms', currentRoomId);
-
-        addSpinnerToBtn(enterCallBtn);
+        cleanupRoomListeners();
+        setButtonLoading(els.enterCallBtn, true);
 
         if (isCreating) {
-            await setDoc(roomDoc, { creator: myName, knock: null, knockStatus: 'idle', offer: null, answer: null, hasEnded: false, participants: 1 });
+            const nextSession = Date.now();
+            callSessionId = nextSession;
 
-            roomWaitingUnsub = onSnapshot(roomDoc, (docSnap) => {
-                const data = docSnap.data();
-                if (data?.knockStatus === 'pending' && data.knock) {
-                    knockMessage.innerText = `${data.knock} wants to join.`;
-                    knockPopup.classList.remove('removed');
+            await setDoc(roomRef, {
+                creator: myName,
+                knock: null,
+                knockStatus: "idle",
+                offer: null,
+                answer: null,
+                sessionId: nextSession,
+                hasEnded: false,
+                participants: 1
+            });
 
-                    acceptKnockBtn.onclick = async () => {
-                        await updateDoc(roomDoc, { knockStatus: 'accepted' });
-                        startCallAsCreator(currentRoomId);
-                    };
+            waitingUnsub = onSnapshot(roomRef, snap => {
+                const data = snap.data();
+                if (!data) return;
 
-                    declineKnockBtn.onclick = async () => {
-                        await updateDoc(roomDoc, { knockStatus: 'rejected', knock: null });
-                        knockPopup.classList.add('removed');
-                    };
+                if (data.knockStatus === "pending" && data.knock) {
+                    if (els.knockMessage) els.knockMessage.textContent = `${data.knock} wants to join.`;
+                    els.knockPopup?.classList.remove("removed");
+
+                    if (els.acceptKnockBtn) {
+                        els.acceptKnockBtn.onclick = async () => {
+                            const activeSession = Date.now();
+                            callSessionId = activeSession;
+                            await updateDoc(roomRef, { knockStatus: "accepted", sessionId: activeSession });
+                            await startCreatorCall(currentRoomId, activeSession);
+                        };
+                    }
+
+                    if (els.declineKnockBtn) {
+                        els.declineKnockBtn.onclick = async () => {
+                            await updateDoc(roomRef, { knockStatus: "rejected", knock: null });
+                            els.knockPopup?.classList.add("removed");
+                        };
+                    }
                 }
             });
         } else {
-            const docExists = await getDoc(roomDoc);
-            if (!docExists.exists()) {
+            const snap = await getDoc(roomRef);
+            if (!snap.exists()) {
                 alert("Room does not exist.");
-                resetRoomState();
+                cleanupRoomListeners();
                 return;
             }
 
-            await updateDoc(roomDoc, { knock: myName, knockStatus: 'pending' });
+            await updateDoc(roomRef, { knock: myName, knockStatus: "pending" });
 
-            roomWaitingUnsub = onSnapshot(roomDoc, (docSnap) => {
-                const data = docSnap.data();
-                if (data?.knockStatus === 'accepted') {
-                    if (roomWaitingUnsub) { roomWaitingUnsub(); roomWaitingUnsub = null; }
-                    startCallAsJoiner(currentRoomId);
-                } else if (data?.knockStatus === 'rejected') {
-                    if (roomWaitingUnsub) { roomWaitingUnsub(); roomWaitingUnsub = null; }
+            waitingUnsub = onSnapshot(roomRef, async snap => {
+                const data = snap.data();
+                if (!data) return;
+
+                if (data.knockStatus === "accepted") {
+                    if (waitingUnsub) {
+                        waitingUnsub();
+                        waitingUnsub = null;
+                    }
+                    await startJoinerCall(currentRoomId);
+                } else if (data.knockStatus === "rejected") {
+                    if (waitingUnsub) {
+                        waitingUnsub();
+                        waitingUnsub = null;
+                    }
                     alert("Call declined by host.");
-                    enterCallBtn.innerHTML = "Join Failed";
-                    setTimeout(() => resetRoomState(), 2000);
+                    if (els.enterCallBtn) els.enterCallBtn.textContent = "Join Failed";
+                    setTimeout(() => cleanupRoomListeners(), 2000);
                 }
             });
         }
     });
 
-    document.querySelectorAll('.videoEnabledToggle').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            if (await ensurePermission('camera')) {
-                videoEnabled = !videoEnabled;
-                syncMediaToggles();
-                updateAllOutgoingVideoPreviews();
+    document.querySelectorAll(".videoEnabledToggle").forEach(btn => {
+        btn.addEventListener("click", () => {
+            videoEnabled = !videoEnabled;
+            syncMediaState();
+        });
+    });
+
+    document.querySelectorAll(".audioEnabledToggle").forEach(btn => {
+        btn.addEventListener("click", () => {
+            audioEnabled = !audioEnabled;
+            syncMediaState();
+        });
+    });
+
+    document.querySelectorAll(".cameraRotate").forEach(btn => {
+        btn.addEventListener("click", rotateCamera);
+    });
+
+    els.endCallBtn?.addEventListener("click", leaveCall);
+
+    els.fullscreenBtn?.addEventListener("click", async () => {
+        try {
+            if (!document.fullscreenElement) {
+                const target = els.inCall && !els.inCall.classList.contains("removed") ? els.inCall : document.body;
+                await (target.requestFullscreen?.() || target.webkitRequestFullscreen?.());
+            } else {
+                await (document.exitFullscreen?.() || document.webkitExitFullscreen?.());
             }
-        });
+        } catch (err) {
+            console.warn("Fullscreen toggle failed:", err);
+        }
     });
 
-    document.querySelectorAll('.audioEnabledToggle').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            if (await ensurePermission('audio')) {
-                audioEnabled = !audioEnabled;
-                if (outgoingVideoStream) {
-                    outgoingVideoStream.getAudioTracks().forEach(t => t.enabled = audioEnabled);
-                }
-                syncMediaToggles();
-            }
-        });
-    });
-
-    document.querySelectorAll('.cameraRotate').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            await switchToNextCamera();
-        });
-    });
-
-    endCallBtn.addEventListener('click', async () => {
-        await leaveCallAndReturnToWaitingRoom();
-    });
-
-    syncMediaToggles();
-    updateButtons();
-
-    if (fullscreenBtn) {
-        fullscreenBtn.addEventListener('click', async () => {
-            try {
-                if (!document.fullscreenElement) {
-                    const elem = (inCall && !inCall.classList.contains('removed')) ? inCall : document.body;
-
-                    if (elem.requestFullscreen) await elem.requestFullscreen();
-                    else if (elem.webkitRequestFullscreen) await elem.webkitRequestFullscreen();
-                } else {
-                    if (document.exitFullscreen) await document.exitFullscreen();
-                    else if (document.webkitExitFullscreen) await document.webkitExitFullscreen();
-                }
-            } catch (e) {
-                console.warn("Fullscreen toggle failed", e);
-            }
-        });
-    }
+    syncMediaState();
+    updateFormState();
 });
