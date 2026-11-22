@@ -1,5 +1,3 @@
-console.log("6")
-
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
 import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
 
@@ -34,6 +32,9 @@ let currentRoomId = null;
 
 let callUnsub = null;
 let roomWaitingUnsub = null;
+let candidatesUnsub = null;
+let pendingIceCandidates = [];
+let isSettingRemoteDescription = false;
 
 const enterCallOriginalSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M9 8v-2a2 2 0 0 1 2 -2h7a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-7a2 2 0 0 1 -2 -2v-2" /><path d="M3 12h13l-3 -3" /><path d="M13 15l3 -3" /></svg>`;
 const spinnerSVG = `<svg class="waiting-spinner" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke="none" d="M0 0h24v24H0z" fill="none" /><path d="M12 6l0 -3" /><path d="M16.25 7.75l2.15 -2.15" /><path d="M18 12l3 0" /><path d="M16.25 16.25l2.15 2.15" /><path d="M12 18l0 3" /><path d="M7.75 16.25l-2.15 2.15" /><path d="M6 12l-3 0" /><path d="M7.75 7.75l-2.15 -2.15" /></svg>`;
@@ -47,13 +48,12 @@ const inCall = document.getElementById('inCall');
 const incomingVideo = document.getElementById('incomingVideo');
 const endCallBtn = document.getElementById('endCall');
 const roomSetting = document.getElementById('roomSetting');
-const fullscreenBtn = document.getElementById('fullscreen')
+const fullscreenBtn = document.getElementById('fullscreen');
 
 const knockPopup = document.getElementById('knockPopup');
 const knockMessage = document.getElementById('knockMessage');
 const acceptKnockBtn = document.getElementById('acceptKnock');
 const declineKnockBtn = document.getElementById('declineKnock');
-
 
 function isCurrentCameraFront(devices, idx) {
     if (!Array.isArray(devices)) return false;
@@ -108,6 +108,12 @@ function resetRoomState() {
         roomWaitingUnsub();
         roomWaitingUnsub = null;
     }
+    if (candidatesUnsub) {
+        candidatesUnsub();
+        candidatesUnsub = null;
+    }
+    pendingIceCandidates = [];
+    isSettingRemoteDescription = false;
     enterCallBtn.innerHTML = enterCallOriginalSVG;
     knockPopup.classList.add('removed');
 }
@@ -128,7 +134,8 @@ function addSpinnerToBtn(btn) {
 async function ensurePermission(type) {
     try {
         if (navigator.mediaDevices?.getUserMedia) {
-            await navigator.mediaDevices.getUserMedia(type === 'camera' ? { video: true } : { audio: true });
+            const stream = await navigator.mediaDevices.getUserMedia(type === 'camera' ? { video: true } : { audio: true });
+            stream.getTracks().forEach(t => t.stop());
             return true;
         }
     } catch (e) { }
@@ -175,40 +182,93 @@ async function switchToNextCamera() {
     videoInputDevices = await getVideoInputDevices();
     if (videoInputDevices.length <= 1) return;
 
+    const previousIndex = currentVideoDeviceIndex;
+    const previousStream = outgoingVideoStream;
     currentVideoDeviceIndex = (currentVideoDeviceIndex + 1) % videoInputDevices.length;
     const nextDevice = videoInputDevices[currentVideoDeviceIndex];
 
-    isFrontCamera = isCurrentCameraFront(videoInputDevices, currentVideoDeviceIndex);
-
     try {
+        if (previousStream) {
+            previousStream.getTracks().forEach(track => track.stop());
+        }
+
         const newStream = await navigator.mediaDevices.getUserMedia({
             video: { deviceId: { exact: nextDevice.deviceId } },
             audio: audioEnabled
         });
 
+        isFrontCamera = isCurrentCameraFront(videoInputDevices, currentVideoDeviceIndex);
         newStream.getVideoTracks().forEach(t => t.enabled = videoEnabled);
+        newStream.getAudioTracks().forEach(t => t.enabled = audioEnabled);
 
         const videoTrack = newStream.getVideoTracks()[0];
-
         if (pc) {
             const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
-            if (sender && videoTrack) sender.replaceTrack(videoTrack);
-        }
-
-        if (outgoingVideoStream) {
-            outgoingVideoStream.getTracks().forEach(track => track.stop());
+            if (sender && videoTrack) {
+                await sender.replaceTrack(videoTrack);
+            }
         }
 
         outgoingVideoStream = newStream;
         updateAllOutgoingVideoPreviews();
         syncMediaToggles();
-    } catch (err) { console.error("Camera switch failed", err); }
+    } catch (err) {
+        console.error("Camera switch failed", err);
+        currentVideoDeviceIndex = previousIndex;
+        try {
+            const fallbackDevice = videoInputDevices[previousIndex];
+            outgoingVideoStream = await navigator.mediaDevices.getUserMedia({
+                video: fallbackDevice ? { deviceId: { exact: fallbackDevice.deviceId } } : true,
+                audio: audioEnabled
+            });
+            isFrontCamera = isCurrentCameraFront(videoInputDevices, previousIndex);
+            updateAllOutgoingVideoPreviews();
+            syncMediaToggles();
+        } catch (fallbackErr) {
+            console.warn("Could not restore previous camera", fallbackErr);
+        }
+    }
+}
+
+async function applyRemoteDescriptionSafely(descriptionInit) {
+    if (!pc || !descriptionInit?.type || !descriptionInit?.sdp) return;
+    if (pc.remoteDescription || isSettingRemoteDescription) return;
+
+    isSettingRemoteDescription = true;
+    try {
+        await pc.setRemoteDescription(new RTCSessionDescription(descriptionInit));
+        while (pendingIceCandidates.length > 0) {
+            const candidateData = pendingIceCandidates.shift();
+            try {
+                await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+            } catch (iceErr) {
+                console.warn("Buffered ICE candidate failed", iceErr);
+            }
+        }
+    } finally {
+        isSettingRemoteDescription = false;
+    }
+}
+
+async function handleRemoteIceCandidate(candidateData) {
+    if (!pc || !candidateData) return;
+    if (!pc.remoteDescription || isSettingRemoteDescription) {
+        pendingIceCandidates.push(candidateData);
+        return;
+    }
+    try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+    } catch (err) {
+        console.warn("Failed to add ICE candidate", err);
+    }
 }
 
 function setupWebRTC() {
     if (pc && pc.signalingState !== "closed") {
         pc.close();
     }
+    pendingIceCandidates = [];
+    isSettingRemoteDescription = false;
     pc = new RTCPeerConnection(servers);
     remoteStream = new MediaStream();
     setVideoOrHide(incomingVideo, remoteStream, true, false);
@@ -216,7 +276,11 @@ function setupWebRTC() {
         outgoingVideoStream.getTracks().forEach(track => pc.addTrack(track, outgoingVideoStream));
     }
     pc.ontrack = event => {
-        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        if (event.streams && event.streams[0]) {
+            event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        } else if (event.track) {
+            remoteStream.addTrack(event.track);
+        }
         syncMediaToggles();
     };
     pc.onconnectionstatechange = () => {
@@ -236,20 +300,28 @@ async function startCallAsCreator(roomId) {
 
     const offerDescription = await pc.createOffer();
     await pc.setLocalDescription(offerDescription);
-    await updateDoc(callDoc, { offer: { sdp: offerDescription.sdp, type: offerDescription.type }, participants: 2 });
+    await updateDoc(callDoc, {
+        offer: { sdp: offerDescription.sdp, type: offerDescription.type },
+        answer: null,
+        hasEnded: false,
+        participants: 2
+    });
 
     if (callUnsub) callUnsub();
-    callUnsub = onSnapshot(callDoc, snapshot => {
+    callUnsub = onSnapshot(callDoc, async snapshot => {
         const data = snapshot.data();
-        if (!pc.currentRemoteDescription && data?.answer) {
-            pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        if (data?.answer?.type && data?.answer?.sdp && !pc.currentRemoteDescription) {
+            await applyRemoteDescriptionSafely(data.answer);
         }
         if (data?.hasEnded) leaveCallAndReturnToWaitingRoom();
     });
 
-    onSnapshot(collection(callDoc, 'answerCandidates'), snapshot => {
-        snapshot.docChanges().forEach(change => {
-            if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+    if (candidatesUnsub) candidatesUnsub();
+    candidatesUnsub = onSnapshot(collection(callDoc, 'answerCandidates'), snapshot => {
+        snapshot.docChanges().forEach(async change => {
+            if (change.type === 'added') {
+                await handleRemoteIceCandidate(change.doc.data());
+            }
         });
     });
 
@@ -264,21 +336,41 @@ async function startCallAsJoiner(roomId) {
         if (event.candidate) addDoc(collection(callDoc, 'answerCandidates'), event.candidate.toJSON());
     };
 
-    const callData = (await getDoc(callDoc)).data();
-    await pc.setRemoteDescription(new RTCSessionDescription(callData.offer));
-
-    const answerDescription = await pc.createAnswer();
-    await pc.setLocalDescription(answerDescription);
-    await updateDoc(callDoc, { answer: { type: answerDescription.type, sdp: answerDescription.sdp }, participants: 2 });
+    let answerCreated = false;
+    const createAndSendAnswer = async (offerData) => {
+        if (answerCreated || !offerData?.type || !offerData?.sdp) return;
+        answerCreated = true;
+        await applyRemoteDescriptionSafely(offerData);
+        const answerDescription = await pc.createAnswer();
+        await pc.setLocalDescription(answerDescription);
+        await updateDoc(callDoc, {
+            answer: { type: answerDescription.type, sdp: answerDescription.sdp },
+            hasEnded: false,
+            participants: 2
+        });
+    };
 
     if (callUnsub) callUnsub();
-    callUnsub = onSnapshot(callDoc, snapshot => {
-        if (snapshot.data()?.hasEnded) leaveCallAndReturnToWaitingRoom();
+    callUnsub = onSnapshot(callDoc, async snapshot => {
+        const data = snapshot.data();
+        if (!data) return;
+        if (data.offer?.type && data.offer?.sdp && !answerCreated) {
+            await createAndSendAnswer(data.offer);
+        }
+        if (data.hasEnded) leaveCallAndReturnToWaitingRoom();
     });
 
-    onSnapshot(collection(callDoc, 'offerCandidates'), snapshot => {
-        snapshot.docChanges().forEach(change => {
-            if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+    const initialData = (await getDoc(callDoc)).data();
+    if (initialData?.offer?.type && initialData?.offer?.sdp) {
+        await createAndSendAnswer(initialData.offer);
+    }
+
+    if (candidatesUnsub) candidatesUnsub();
+    candidatesUnsub = onSnapshot(collection(callDoc, 'offerCandidates'), snapshot => {
+        snapshot.docChanges().forEach(async change => {
+            if (change.type === 'added') {
+                await handleRemoteIceCandidate(change.doc.data());
+            }
         });
     });
 
@@ -294,6 +386,7 @@ function transitionToInCall() {
 
 async function leaveCallAndReturnToWaitingRoom() {
     if (callUnsub) { callUnsub(); callUnsub = null; }
+    if (candidatesUnsub) { candidatesUnsub(); candidatesUnsub = null; }
 
     if (currentRoomId) {
         try { await updateDoc(doc(db, 'rooms', currentRoomId), { hasEnded: true, participants: 0 }); } catch (e) { }
@@ -302,6 +395,7 @@ async function leaveCallAndReturnToWaitingRoom() {
     if (pc && pc.signalingState !== "closed") {
         try { pc.close(); } catch (e) { }
     }
+    pc = null;
 
     try {
         if (remoteStream) {
@@ -453,7 +547,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (fullscreenBtn) {
         fullscreenBtn.addEventListener('click', async () => {
             try {
-                const docEl = document.documentElement;
                 if (!document.fullscreenElement) {
                     const elem = (inCall && !inCall.classList.contains('removed')) ? inCall : document.body;
 
