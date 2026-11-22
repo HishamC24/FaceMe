@@ -1,4 +1,4 @@
-console.log("4");
+console.log("5");
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
 import { getFirestore, doc, setDoc, getDoc, updateDoc, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
@@ -69,6 +69,12 @@ function isCurrentCameraFront(devices, idx) {
     return false;
 }
 
+function hasEnabledVideoTrack(stream) {
+    if (!stream) return false;
+    const tracks = stream.getVideoTracks();
+    return tracks.length > 0 && tracks.some(track => track.enabled);
+}
+
 function setVideoOrHide(videoElem, stream, enabled, flipHorizontally = false) {
     if (!videoElem) return;
     if (!stream || !enabled || !hasEnabledVideoTrack(stream)) {
@@ -76,20 +82,13 @@ function setVideoOrHide(videoElem, stream, enabled, flipHorizontally = false) {
         videoElem.classList.add('video-hidden');
         videoElem.style.transform = "";
     } else {
-        if (videoElem.srcObject !== stream) videoElem.srcObject = stream;
-        videoElem.classList.remove('video-hidden');
-        if (flipHorizontally) {
-            videoElem.style.transform = "scaleX(-1)";
-        } else {
-            videoElem.style.transform = "";
+        if (videoElem.srcObject !== stream) {
+            videoElem.srcObject = stream;
         }
+        videoElem.classList.remove('video-hidden');
+        videoElem.style.transform = flipHorizontally ? "scaleX(-1)" : "";
+        videoElem.play().catch(err => console.warn("video play blocked:", err));
     }
-}
-
-function hasEnabledVideoTrack(stream) {
-    if (!stream) return false;
-    const tracks = stream.getVideoTracks();
-    return tracks.length > 0 && tracks.some(track => track.enabled);
 }
 
 function updateButtons() {
@@ -166,9 +165,13 @@ function syncMediaToggles() {
     }
 
     if (incomingVideo) {
-        setVideoOrHide(incomingVideo, remoteStream, true, false);
-        incomingVideo.muted = false;
-        incomingVideo.volume = 1;
+        const hasRemoteVideo = hasEnabledVideoTrack(remoteStream);
+        setVideoOrHide(incomingVideo, remoteStream, hasRemoteVideo, false);
+        if (remoteStream.getAudioTracks().length > 0) {
+            incomingVideo.muted = false;
+            incomingVideo.volume = 1;
+            incomingVideo.play().catch(() => { });
+        }
     }
 }
 
@@ -235,14 +238,29 @@ function setupWebRTC() {
     remoteDescReady = false;
     pc = new RTCPeerConnection(servers);
     remoteStream = new MediaStream();
-    setVideoOrHide(incomingVideo, remoteStream, true, false);
+    setVideoOrHide(incomingVideo, remoteStream, false, false);
+
     if (outgoingVideoStream) {
         outgoingVideoStream.getTracks().forEach(track => pc.addTrack(track, outgoingVideoStream));
+    } else {
+        console.warn("outgoingVideoStream is null when setting up WebRTC.");
     }
+
     pc.ontrack = event => {
-        event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+        console.log("ontrack fired:", event.track.kind, "streams:", event.streams.length);
+        if (event.track && !remoteStream.getTracks().some(t => t.id === event.track.id)) {
+            remoteStream.addTrack(event.track);
+        }
+        if (event.streams && event.streams[0]) {
+            event.streams[0].getTracks().forEach(track => {
+                if (!remoteStream.getTracks().some(t => t.id === track.id)) {
+                    remoteStream.addTrack(track);
+                }
+            });
+        }
         syncMediaToggles();
     };
+
     pc.onconnectionstatechange = () => {
         if (["disconnected", "failed", "closed"].includes(pc.connectionState)) {
             leaveCallAndReturnToWaitingRoom();
@@ -399,7 +417,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         setVideoOrHide(incomingVideo, null, false, false);
     }
 
-    setVideoOrHide(incomingVideo, remoteStream, true, false);
+    setVideoOrHide(incomingVideo, remoteStream, false, false);
 
     enterCallBtn.addEventListener('click', async () => {
         if (enterCallBtn.classList.contains('disabled')) return;
