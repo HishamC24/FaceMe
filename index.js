@@ -259,26 +259,41 @@ async function startCallAsCreator(roomId) {
 async function startCallAsJoiner(roomId) {
     setupWebRTC();
     const callDoc = doc(db, 'rooms', roomId);
+    let hasAnsweredOffer = false;
 
     pc.onicecandidate = event => {
-        if (event.candidate) addDoc(collection(callDoc, 'answerCandidates'), event.candidate.toJSON());
+        if (event.candidate) {
+            addDoc(collection(callDoc, 'answerCandidates'), event.candidate.toJSON());
+        }
     };
 
-    const callData = (await getDoc(callDoc)).data();
-    await pc.setRemoteDescription(new RTCSessionDescription(callData.offer));
-
-    const answerDescription = await pc.createAnswer();
-    await pc.setLocalDescription(answerDescription);
-    await updateDoc(callDoc, { answer: { type: answerDescription.type, sdp: answerDescription.sdp }, participants: 2 });
-
     if (callUnsub) callUnsub();
-    callUnsub = onSnapshot(callDoc, snapshot => {
-        if (snapshot.data()?.hasEnded) leaveCallAndReturnToWaitingRoom();
+    callUnsub = onSnapshot(callDoc, async snapshot => {
+        const data = snapshot.data();
+        if (!data) return;
+
+        if (!hasAnsweredOffer && data.offer?.type && data.offer?.sdp && pc.signalingState === 'stable') {
+            hasAnsweredOffer = true;
+            await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+
+            const answerDescription = await pc.createAnswer();
+            await pc.setLocalDescription(answerDescription);
+            await updateDoc(callDoc, {
+                answer: { type: answerDescription.type, sdp: answerDescription.sdp },
+                participants: 2
+            });
+        }
+
+        if (data.hasEnded) {
+            leaveCallAndReturnToWaitingRoom();
+        }
     });
 
     onSnapshot(collection(callDoc, 'offerCandidates'), snapshot => {
         snapshot.docChanges().forEach(change => {
-            if (change.type === 'added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+            if (change.type === 'added') {
+                pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+            }
         });
     });
 
