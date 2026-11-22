@@ -202,23 +202,23 @@ async function clearSubcollection(parentDocRef, subcollectionName) {
 }
 
 async function initMediaDevices() {
-    if (!navigator.mediaDevices?.enumerateDevices || !navigator.mediaDevices?.getUserMedia) return;
+    if (!navigator.mediaDevices?.getUserMedia) return;
     try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        videoDevices = devices.filter(d => d.kind === "videoinput");
-        cameraIndex = 0;
-        isFrontCamera = detectFrontCamera(videoDevices, cameraIndex);
+        try {
+            outgoingStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        } catch (_) {
+            outgoingStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
 
-        const selectedDevice = videoDevices[cameraIndex] || null;
-        outgoingStream = await navigator.mediaDevices.getUserMedia({
-            video: selectedDevice ? { deviceId: { exact: selectedDevice.deviceId } } : true,
-            audio: true
-        });
-
-        const refreshed = await navigator.mediaDevices.enumerateDevices();
-        const updatedVideos = refreshed.filter(d => d.kind === "videoinput");
-        if (updatedVideos.length > 0) {
-            videoDevices = updatedVideos;
+        if (navigator.mediaDevices.enumerateDevices) {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            videoDevices = devices.filter(d => d.kind === "videoinput" && d.deviceId);
+            const activeTrack = outgoingStream?.getVideoTracks()?.[0];
+            const activeSettings = activeTrack?.getSettings?.();
+            const matchedIndex = activeSettings?.deviceId
+                ? videoDevices.findIndex(d => d.deviceId === activeSettings.deviceId)
+                : -1;
+            cameraIndex = matchedIndex >= 0 ? matchedIndex : 0;
             isFrontCamera = detectFrontCamera(videoDevices, cameraIndex);
         }
 
@@ -231,8 +231,8 @@ async function initMediaDevices() {
 
 async function rotateCamera() {
     if (!navigator.mediaDevices?.enumerateDevices || !navigator.mediaDevices?.getUserMedia) return;
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    videoDevices = devices.filter(d => d.kind === "videoinput");
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput" && d.deviceId);
+    videoDevices = devices;
     if (videoDevices.length <= 1) return;
 
     const prevIndex = cameraIndex;
@@ -272,11 +272,7 @@ async function rotateCamera() {
         console.error("Camera switch failed:", err);
         cameraIndex = prevIndex;
         try {
-            const fallback = videoDevices[prevIndex];
-            outgoingStream = await navigator.mediaDevices.getUserMedia({
-                video: fallback ? { deviceId: { exact: fallback.deviceId } } : true,
-                audio: audioEnabled
-            });
+            outgoingStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: audioEnabled });
             isFrontCamera = detectFrontCamera(videoDevices, prevIndex);
             syncMediaState();
         } catch (_) { }
@@ -332,16 +328,16 @@ function createPeerConnection() {
     }
 
     pc.ontrack = event => {
-        if (event.streams && event.streams[0]) {
-            event.streams[0].getTracks().forEach(track => {
-                if (!remoteStream.getTracks().some(existing => existing.id === track.id)) {
-                    remoteStream.addTrack(track);
-                }
-            });
-        } else if (event.track) {
-            if (!remoteStream.getTracks().some(existing => existing.id === event.track.id)) {
-                remoteStream.addTrack(event.track);
+        const incomingTracks = event.streams?.[0]?.getTracks() || (event.track ? [event.track] : []);
+        incomingTracks.forEach(track => {
+            if (!remoteStream.getTracks().some(existing => existing.id === track.id)) {
+                remoteStream.addTrack(track);
             }
+            track.onunmute = () => refreshIncomingPreview();
+        });
+        if (els.incomingVideo) {
+            els.incomingVideo.srcObject = null;
+            els.incomingVideo.srcObject = remoteStream;
         }
         refreshIncomingPreview();
     };
@@ -562,6 +558,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
                     if (els.acceptKnockBtn) {
                         els.acceptKnockBtn.onclick = async () => {
+                            if (waitingUnsub) {
+                                waitingUnsub();
+                                waitingUnsub = null;
+                            }
+                            els.knockPopup?.classList.add("removed");
                             const activeSession = Date.now();
                             callSessionId = activeSession;
                             await updateDoc(roomRef, { knockStatus: "accepted", sessionId: activeSession });
